@@ -1,0 +1,18 @@
+build/
+
+# cmake
+CMakeUserPresets.json
+
+# vscode
+.vscode/
+
+# Visual Studio
+.vs/
+out/
+
+# pre-commit
+.pre-commit-cache/
+
+# Python cache
+__pycache__/
+*.pyc
