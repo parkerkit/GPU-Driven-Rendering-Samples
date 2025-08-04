@@ -42,7 +42,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR}"
 # Third-Party Dependencies
 # ============================================================================
 
-# add_subdirectory(third_party)
+add_subdirectory(third_party)
 
 # ============================================================================
 # Project Sources
