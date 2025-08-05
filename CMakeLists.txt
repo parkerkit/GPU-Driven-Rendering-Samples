@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.26)
 
 project(
   Learning_OpenGL
@@ -43,6 +43,13 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR}"
 # ============================================================================
 
 add_subdirectory(third_party)
+
+# ============================================================================
+# Asset Paths & Compile Definitions
+# ============================================================================
+
+file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}/assets" ASSETS_DIR)
+add_compile_definitions(ASSETS_PATH="${ASSETS_DIR}/")
 
 # ============================================================================
 # Project Sources
