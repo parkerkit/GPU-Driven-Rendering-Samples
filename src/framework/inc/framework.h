@@ -9,7 +9,9 @@
 #include "camera_controller.h"
 #include "drawable.h"
 #include "image.h"
+#include "primitive.h"
 #include "shader.h"
+#include "shapes.h"
 #include "texture.h"
 
 namespace fw {

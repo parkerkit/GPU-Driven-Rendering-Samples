@@ -1,24 +1,43 @@
 #include "image.h"
 
-using namespace fw;
-
 #include <stb_image.h>
 
+#include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
-Image::Image(const std::filesystem::path& filepath, int desired_channels) {
-  // Flip vertical orientation on load to match OpenGL's bottom-left origin
-  stbi_set_flip_vertically_on_load(true);
+using namespace fw;
 
-  m_pixels = stbi_load(filepath.string().c_str(), &m_width, &m_height, &m_channels, desired_channels);
+Image::Image(const std::filesystem::path& file_path, int desired_channels, bool flip_vertically) {
+  stbi_set_flip_vertically_on_load_thread(flip_vertically);
+
+  m_pixels = stbi_load(file_path.string().c_str(), &m_width, &m_height, &m_channels, desired_channels);
   if (!m_pixels) {
-    throw std::runtime_error("Failed to load image: " + filepath.string() + " - " + stbi_failure_reason());
+    throw std::runtime_error("Failed to load image: " + file_path.string() + " - " + stbi_failure_reason());
   }
 
-  if (desired_channels > 0) {
-    m_channels = desired_channels;
+  SetDesiredChannels(desired_channels);
+}
+
+Image::Image(std::span<const std::uint8_t> encoded_data, int desired_channels, bool flip_vertically) {
+  if (encoded_data.empty()) {
+    throw std::runtime_error("Failed to load image from memory: encoded data is empty.");
   }
+
+  if (encoded_data.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+    throw std::runtime_error("Failed to load image from memory: encoded data is too large.");
+  }
+
+  stbi_set_flip_vertically_on_load_thread(flip_vertically);
+
+  m_pixels = stbi_load_from_memory(encoded_data.data(), static_cast<int>(encoded_data.size()), &m_width, &m_height,
+                                   &m_channels, desired_channels);
+  if (!m_pixels) {
+    throw std::runtime_error(std::string{"Failed to load image from memory: "} + stbi_failure_reason());
+  }
+
+  SetDesiredChannels(desired_channels);
 }
 
 Image::~Image() noexcept {
@@ -46,7 +65,7 @@ Image& Image::operator=(Image&& other) noexcept {
   return *this;
 }
 
-const uint8_t* Image::GetPixels() const noexcept { return m_pixels; }
+const std::uint8_t* Image::GetPixels() const noexcept { return m_pixels; }
 
 int Image::GetWidth() const noexcept { return m_width; }
 
@@ -81,5 +100,11 @@ GLenum Image::GetGLFormat() const noexcept {
       return GL_RGBA;
     default:
       return GL_NONE;
+  }
+}
+
+void Image::SetDesiredChannels(int desired_channels) noexcept {
+  if (desired_channels > 0) {
+    m_channels = desired_channels;
   }
 }

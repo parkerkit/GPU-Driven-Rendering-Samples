@@ -3,7 +3,7 @@
 // 3. 计算着色器 + SSBO
 // 4. 纹理
 
-#define TEST4
+#define TEST5
 
 #ifdef TEST1
 
@@ -290,3 +290,82 @@ private:
 APPLICATION_MAIN(TestApp)
 
 #endif  // TEST4
+
+#ifdef TEST5
+
+#include <framework.h>
+#include <imgui.h>
+
+#include <array>
+#include <glm/gtc/matrix_transform.hpp>
+
+class TestApp : public fw::Application {
+protected:
+  void OnInit() override {
+    fw::ShaderPaths shader_paths{.vertex = "shaders/framework_test_transform.vert",
+                                 .fragment = "shaders/framework_test_transform.frag"};
+    m_shader = std::make_unique<fw::GraphicsShader>(shader_paths);
+
+    auto cube = fw::Shapes::Cube(1.0F, {-0.5F, 0.0F, 0.0F});
+
+    m_drawable1 = std::make_unique<fw::Drawable>(cube.topology);
+    m_drawable1->AddVertexBuffer(0, std::span(cube.attributes.positions), sizeof(glm::vec3));
+    m_drawable1->SetIndexBuffer(std::span(cube.indices));
+    m_drawable1->GetVertexArray().SetAttribute(0, 0, 3, GL_FLOAT, 0);
+
+    auto sphere = fw::Shapes::Sphere(0.5F, 32, 32, {0.5F, 0.0F, 0.0F});
+
+    m_drawable2 = std::make_unique<fw::Drawable>(sphere.topology);
+    m_drawable2->AddVertexBuffer(0, std::span(sphere.attributes.positions), sizeof(glm::vec3));
+    m_drawable2->SetIndexBuffer(std::span(sphere.indices));
+    m_drawable2->GetVertexArray().SetAttribute(0, 0, 3, GL_FLOAT, 0);
+
+    m_bounds = fw::AABB::Merge({cube.bounds, sphere.bounds});
+  }
+
+  void OnImGui() override {
+    ImGui::Begin("ImGui");
+
+    if (ImGui::Button("Reset camera")) {
+      GetCameraController()->ResetCamera(m_bounds);
+    }
+
+    static int s_view_mode_index{};
+    constexpr int view_mode_count{7};
+    constexpr std::array<const char*, view_mode_count> view_mode_names = {"Custom", "Top",  "Bottom", "Front",
+                                                                          "Back",   "Left", "Right"};
+    if (ImGui::Combo("View mode", &s_view_mode_index, view_mode_names.data(), view_mode_count)) {
+      GetCameraController()->SetViewMode(static_cast<fw::CameraController::ViewMode>(s_view_mode_index), m_bounds);
+    }
+
+    ImGui::End();
+  }
+
+  void OnRender() override {
+    glEnable(GL_DEPTH_TEST);
+    glClearColor(0.1F, 0.2F, 0.3F, 1.0F);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    auto view_mat = GetCamera()->GetViewMatrix();
+    auto proj_mat = GetCamera()->GetProjectionMatrix();
+
+    m_shader->Bind();
+    m_shader->SetMat4("uView", view_mat);
+    m_shader->SetMat4("uProj", proj_mat);
+
+    m_shader->SetVec3("uColor", glm::vec3(1.0F, 0.0F, 0.0F));
+    m_drawable1->Draw();
+    m_shader->SetVec3("uColor", glm::vec3(0.0F, 1.0F, 0.0F));
+    m_drawable2->Draw();
+  }
+
+private:
+  std::unique_ptr<fw::Drawable> m_drawable1{};
+  std::unique_ptr<fw::Drawable> m_drawable2{};
+  std::unique_ptr<fw::GraphicsShader> m_shader{};
+  fw::AABB m_bounds{};
+};
+
+APPLICATION_MAIN(TestApp)
+
+#endif  // TEST5
