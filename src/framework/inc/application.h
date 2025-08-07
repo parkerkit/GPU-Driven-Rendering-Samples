@@ -41,7 +41,7 @@ protected:
   virtual void OnImGui();
   virtual void OnShutdown();
   virtual void OnFramebufferResized(int width, int height);
-  virtual void OnCursorMoved(double cursor_x, double cursor_y);
+  virtual void OnCursorMoved(double delta_x, double delta_y);
   virtual void OnMouseButton(MouseButton button, InputAction action, Modifiers mods);
   virtual void OnScrolled(double offset, Modifiers mods);
   virtual void OnKey(Key key, InputAction action, Modifiers mods);
@@ -60,6 +60,7 @@ private:
 
   static Application& GetApplication(GLFWwindow* window);
   static void FramebufferSizeCallback(GLFWwindow* window, int width, int height);
+  static void WindowFocusCallback(GLFWwindow* window, int is_focused);
   static void CursorPositionCallback(GLFWwindow* window, double cursor_x, double cursor_y);
   static void MouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
   static void ScrollCallback(GLFWwindow* window, double offset_x, double offset_y);
@@ -68,6 +69,9 @@ private:
 private:
   AppConfig m_config{};
   GLFWwindow* m_window{};
+  double m_last_cursor_x{};
+  double m_last_cursor_y{};
+  bool m_has_cursor_position{false};
   std::unique_ptr<Camera> m_camera{std::make_unique<Camera>()};
   std::unique_ptr<CameraController> m_camera_controller{std::make_unique<OrbitController>(*m_camera)};
 };

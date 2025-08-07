@@ -138,6 +138,14 @@ void Application::Run() {
     OnImGui();
     ImGui::Render();
 
+    if (m_camera_controller) {
+      if (IsMouseCapturedByImGui()) {
+        m_camera_controller->ResetState();
+      }
+      // UI 和业务逻辑也可能改变相机，渲染前统一更新裁剪范围。
+      m_camera_controller->Update(delta_time);
+    }
+
     OnRender();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     glfwSwapBuffers(m_window);
@@ -163,22 +171,39 @@ void Application::OnFramebufferResized(int width, int height) {
   m_camera_controller->SetViewportSize(width, height);
 }
 
-void Application::OnCursorMoved(double cursor_x, double cursor_y) {
+void Application::OnCursorMoved(double delta_x, double delta_y) {
   if (!m_camera_controller) {
     return;
   }
   if (IsMouseCapturedByImGui()) {
+    m_camera_controller->ResetState();
     return;
   }
 
-  m_camera_controller->OnMouseMove(cursor_x, cursor_y);
+  int window_width{};
+  int window_height{};
+  int framebuffer_width{};
+  int framebuffer_height{};
+  glfwGetWindowSize(m_window, &window_width, &window_height);
+  glfwGetFramebufferSize(m_window, &framebuffer_width, &framebuffer_height);
+  if (window_width <= 0 || window_height <= 0 || framebuffer_width <= 0 || framebuffer_height <= 0) {
+    m_camera_controller->ResetState();
+    return;
+  }
+
+  // GLFW 光标使用窗口坐标，控制器视口使用 framebuffer 像素。
+  const double pixel_delta_x{delta_x * static_cast<double>(framebuffer_width) / window_width};
+  const double pixel_delta_y{delta_y * static_cast<double>(framebuffer_height) / window_height};
+  m_camera_controller->OnMouseMove(pixel_delta_x, pixel_delta_y);
 }
 
 void Application::OnMouseButton(MouseButton button, InputAction action, Modifiers mods) {
   if (!m_camera_controller) {
     return;
   }
-  if (IsMouseCapturedByImGui()) {
+  // 已开始的拖拽必须收到释放事件，即使鼠标此时由 UI 捕获。
+  if (action != InputAction::Release && IsMouseCapturedByImGui()) {
+    m_camera_controller->ResetState();
     return;
   }
 
@@ -230,6 +255,7 @@ void Application::InitializeWindow() {
 
   glfwSetWindowUserPointer(m_window, this);
   glfwSetFramebufferSizeCallback(m_window, FramebufferSizeCallback);
+  glfwSetWindowFocusCallback(m_window, WindowFocusCallback);
   glfwSetCursorPosCallback(m_window, CursorPositionCallback);
   glfwSetMouseButtonCallback(m_window, MouseButtonCallback);
   glfwSetScrollCallback(m_window, ScrollCallback);
@@ -273,20 +299,36 @@ void Application::FramebufferSizeCallback(GLFWwindow* window, int width, int hei
   GetApplication(window).OnFramebufferResized(width, height);
 }
 
+void Application::WindowFocusCallback(GLFWwindow* window, int is_focused) {
+  Application& application{GetApplication(window)};
+  application.m_has_cursor_position = false;
+  if (is_focused == GLFW_FALSE && application.m_camera_controller) {
+    application.m_camera_controller->ResetState();
+  }
+}
+
 void Application::CursorPositionCallback(GLFWwindow* window, double cursor_x, double cursor_y) {
-  static double s_last_x{};
-  static double s_last_y{};
-  GetApplication(window).OnCursorMoved(cursor_x - s_last_x, cursor_y - s_last_y);
-  s_last_x = cursor_x;
-  s_last_y = cursor_y;
+  Application& application{GetApplication(window)};
+  const double delta_x{application.m_has_cursor_position ? cursor_x - application.m_last_cursor_x : 0.0};
+  const double delta_y{application.m_has_cursor_position ? cursor_y - application.m_last_cursor_y : 0.0};
+  application.m_last_cursor_x = cursor_x;
+  application.m_last_cursor_y = cursor_y;
+  application.m_has_cursor_position = true;
+  application.OnCursorMoved(delta_x, delta_y);
 }
 
 void Application::MouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
+  Application& application{GetApplication(window)};
+  if (action == GLFW_PRESS) {
+    glfwGetCursorPos(window, &application.m_last_cursor_x, &application.m_last_cursor_y);
+    application.m_has_cursor_position = true;
+  }
+
   auto temp_btn = GLFWButtonToMouseButton(button);
   auto temp_act = GLFWActionToInputAction(action);
   auto temp_mod = GLFWModToModifiers(mods);
 
-  GetApplication(window).OnMouseButton(temp_btn, temp_act, temp_mod);
+  application.OnMouseButton(temp_btn, temp_act, temp_mod);
 }
 
 void Application::ScrollCallback(GLFWwindow* window, double offset_x, double offset_y) {

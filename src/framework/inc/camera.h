@@ -22,18 +22,21 @@ public:
   // 同时更新 LookAt 参数，减少重复标记
   void LookAt(const glm::vec3& pos, const glm::vec3& target, const glm::vec3& up) noexcept;
 
+  // 仅设置投影类型；交互切换应使用 CameraController::SetProjectionType 转换取景参数。
   void SetProjectionType(ProjectionType type) noexcept;
   ProjectionType GetProjectionType() const noexcept;
 
-  void SetFov(float fov) noexcept;
-  float GetFov() const noexcept;
+  // 单位是角度
+  void SetFovY(float fov_y) noexcept;
+  float GetFovY() const noexcept;
 
   void SetOrthoSize(float size) noexcept;
   float GetOrthoSize() const noexcept;
 
   void SetNearFar(float near_plane, float far_plane) noexcept;
 
-  void SetViewportSize(float width, float height) noexcept;
+  void SetAspectRatio(float aspect_ratio) noexcept;
+  float GetAspectRatio() const noexcept;
 
   glm::mat4 GetViewMatrix() const noexcept;
   glm::mat4 GetProjectionMatrix() const noexcept;
@@ -51,7 +54,7 @@ private:
 
   // 投影参数
   ProjectionType m_proj_type{ProjectionType::Perspective};
-  float m_fov{45.0F};        // 透视视角 (角度)
+  float m_fov_y{45.0F};      // 透视视角 (角度)
   float m_ortho_size{5.0F};  // 正交视口半高
   float m_aspect_ratio{16.0F / 9.0F};
   float m_near_plane{0.1F};

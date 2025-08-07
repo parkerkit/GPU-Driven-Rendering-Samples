@@ -2,6 +2,7 @@
 // 2. 相机变换
 // 3. 计算着色器 + SSBO
 // 4. 纹理
+// 5. 模型创建 + 相机测试
 
 #define TEST5
 
@@ -124,6 +125,7 @@ protected:
     }
 
     m_aabb = {glm::vec3(-0.5F), glm::vec3(0.5F)};
+    GetCameraController()->SetSceneBounds(m_aabb);
   }
 
   void OnImGui() override {
@@ -306,14 +308,14 @@ protected:
                                  .fragment = "shaders/framework_test_transform.frag"};
     m_shader = std::make_unique<fw::GraphicsShader>(shader_paths);
 
-    auto cube = fw::Shapes::Cube(1.0F, {-0.5F, 0.0F, 0.0F});
+    auto cube = fw::Shapes::Cube(1.0F, {0.0F, 0.0F, 10.0F});
 
     m_drawable1 = std::make_unique<fw::Drawable>(cube.topology);
     m_drawable1->AddVertexBuffer(0, std::span(cube.attributes.positions), sizeof(glm::vec3));
     m_drawable1->SetIndexBuffer(std::span(cube.indices));
     m_drawable1->GetVertexArray().SetAttribute(0, 0, 3, GL_FLOAT, 0);
 
-    auto sphere = fw::Shapes::Sphere(0.5F, 32, 32, {0.5F, 0.0F, 0.0F});
+    auto sphere = fw::Shapes::Sphere(0.5F, 32, 32, {0.0F, 0.0F, 0.0F});
 
     m_drawable2 = std::make_unique<fw::Drawable>(sphere.topology);
     m_drawable2->AddVertexBuffer(0, std::span(sphere.attributes.positions), sizeof(glm::vec3));
@@ -321,6 +323,7 @@ protected:
     m_drawable2->GetVertexArray().SetAttribute(0, 0, 3, GL_FLOAT, 0);
 
     m_bounds = fw::AABB::Merge({cube.bounds, sphere.bounds});
+    GetCameraController()->SetSceneBounds(m_bounds);
   }
 
   void OnImGui() override {
@@ -328,6 +331,13 @@ protected:
 
     if (ImGui::Button("Reset camera")) {
       GetCameraController()->ResetCamera(m_bounds);
+    }
+
+    int camera_type_index{static_cast<int>(GetCamera()->GetProjectionType())};
+    constexpr int camera_type_count{2};
+    constexpr std::array<const char*, camera_type_count> camera_type_names{"Perspective", "Orthographic"};
+    if (ImGui::Combo("Camera type", &camera_type_index, camera_type_names.data(), camera_type_count)) {
+      GetCameraController()->SetProjectionType(static_cast<fw::Camera::ProjectionType>(camera_type_index));
     }
 
     static int s_view_mode_index{};
