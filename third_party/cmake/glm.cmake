@@ -9,3 +9,8 @@ target_include_directories(third_party_glm
     SYSTEM INTERFACE
         "${CMAKE_CURRENT_SOURCE_DIR}/glm"
 )
+
+target_compile_definitions(third_party_glm
+    INTERFACE
+        GLM_ENABLE_EXPERIMENTAL
+)
