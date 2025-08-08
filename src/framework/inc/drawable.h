@@ -74,6 +74,9 @@ public:
   const VertexArray& GetVertexArray() const noexcept;
 
   void Draw() const noexcept;
+  void DrawInstanced(GLsizei instance_count) const noexcept;
+  void DrawInstanced(GLsizei instance_count, GLuint base_instance) const noexcept;
+  void DrawIndirect(GLuint indirect_buffer, GLintptr offset) const noexcept;
 
 private:
   struct VertexBufferBinding {

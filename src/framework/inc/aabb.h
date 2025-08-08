@@ -20,6 +20,8 @@ public:
 
   [[nodiscard]] glm::vec3 GetCenter() const noexcept;
 
+  [[nodiscard]] glm::vec3 GetExtent() const noexcept;
+
   [[nodiscard]] float GetBoundingRadius() const noexcept;
 
   void Expand(const glm::vec3& point) noexcept;

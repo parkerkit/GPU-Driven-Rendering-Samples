@@ -12,6 +12,8 @@ bool AABB::IsValid() const noexcept { return glm::all(glm::lessThanEqual(m_min, 
 
 glm::vec3 AABB::GetCenter() const noexcept { return IsValid() ? (m_min + m_max) * 0.5F : glm::vec3{}; }
 
+glm::vec3 AABB::GetExtent() const noexcept { return IsValid() ? (m_max - m_min) * 0.5F : glm::vec3{}; }
+
 float AABB::GetBoundingRadius() const noexcept { return IsValid() ? glm::length(m_max - m_min) * 0.5F : 0.0F; }
 
 void AABB::Expand(const glm::vec3& point) noexcept {

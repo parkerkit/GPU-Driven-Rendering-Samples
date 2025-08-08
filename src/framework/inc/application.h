@@ -17,7 +17,7 @@ struct AppConfig {
   int window_width{800};
   int window_height{600};
   int gl_major_version{4};
-  int gl_minor_version{5};
+  int gl_minor_version{6};
   bool is_vsync_enabled{true};
 };
 

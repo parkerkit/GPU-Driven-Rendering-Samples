@@ -21,3 +21,41 @@ void Drawable::Draw() const noexcept {
 
   glDrawArrays(m_primitive, 0, m_count);
 }
+
+void Drawable::DrawInstanced(GLsizei instance_count) const noexcept {
+  m_vertex_array.Bind();
+
+  if (m_index_buffer.has_value()) {
+    glDrawElementsInstanced(m_primitive, m_count, m_index_type, nullptr, instance_count);
+    return;
+  }
+
+  glDrawArraysInstanced(m_primitive, 0, m_count, instance_count);
+}
+
+void Drawable::DrawInstanced(GLsizei instance_count, GLuint base_instance) const noexcept {
+  m_vertex_array.Bind();
+
+  if (m_index_buffer.has_value()) {
+    glDrawElementsInstancedBaseInstance(m_primitive, m_count, m_index_type, nullptr, instance_count, base_instance);
+    return;
+  }
+
+  glDrawArraysInstancedBaseInstance(m_primitive, 0, m_count, instance_count, base_instance);
+}
+
+void Drawable::DrawIndirect(GLuint indirect_buffer, GLintptr byte_offset) const noexcept {
+  m_vertex_array.Bind();
+
+  glBindBuffer(GL_DRAW_INDIRECT_BUFFER, indirect_buffer);
+
+  // NOLINTNEXTLINE(performance-no-int-to-ptr)
+  const void* offset = reinterpret_cast<const void*>(byte_offset);
+
+  if (m_index_buffer.has_value()) {
+    glDrawElementsIndirect(m_primitive, m_index_type, offset);
+    return;
+  }
+
+  glDrawArraysIndirect(m_primitive, offset);
+}
