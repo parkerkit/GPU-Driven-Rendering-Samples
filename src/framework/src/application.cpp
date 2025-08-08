@@ -22,6 +22,58 @@ void CheckGLADResult(int result) {
   }
 }
 
+void GLAPIENTRY MessageCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length,
+                                const GLchar* message, const void* user_param) {
+  static_cast<void>(source);
+  static_cast<void>(id);
+  static_cast<void>(length);
+  static_cast<void>(user_param);
+
+  // 忽略一些不重要的通知类消息
+  if (severity == GL_DEBUG_SEVERITY_NOTIFICATION) {
+    return;
+  }
+
+  std::cerr << "------------------------------------------\n";
+  std::cerr << "OpenGL Debug Output\n";
+  std::cerr << "Message: " << message << '\n';
+  std::cerr << "Type: ";
+  switch (type) {
+    case GL_DEBUG_TYPE_ERROR:
+      std::cerr << "ERROR";
+      break;
+    case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR:
+      std::cerr << "DEPRECATED_BEHAVIOR";
+      break;
+    case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR:
+      std::cerr << "UNDEFINED_BEHAVIOR";
+      break;
+    case GL_DEBUG_TYPE_PORTABILITY:
+      std::cerr << "PORTABILITY";
+      break;
+    case GL_DEBUG_TYPE_PERFORMANCE:
+      std::cerr << "PERFORMANCE";
+      break;
+    case GL_DEBUG_TYPE_OTHER:
+      std::cerr << "OTHER";
+      break;
+  }
+
+  std::cerr << "\nSeverity: ";
+  switch (severity) {
+    case GL_DEBUG_SEVERITY_HIGH:
+      std::cerr << "HIGH (Fatal/Critical)";
+      break;
+    case GL_DEBUG_SEVERITY_MEDIUM:
+      std::cerr << "MEDIUM";
+      break;
+    case GL_DEBUG_SEVERITY_LOW:
+      std::cerr << "LOW";
+      break;
+  }
+  std::cout << "\n";
+}
+
 constexpr MouseButton GLFWButtonToMouseButton(int button) {
   // clang-format off
   switch (button) {
@@ -241,6 +293,7 @@ void Application::InitializeWindow() {
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, m_config.gl_minor_version);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
   glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+  glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GL_TRUE);
 
   m_window =
     glfwCreateWindow(m_config.window_width, m_config.window_height, m_config.window_name.data(), nullptr, nullptr);
@@ -266,6 +319,34 @@ void Application::InitializeWindow() {
   glfwGetFramebufferSize(m_window, &framebuffer_width, &framebuffer_height);
   glViewport(0, 0, framebuffer_width, framebuffer_height);
   OnFramebufferResized(framebuffer_width, framebuffer_height);
+
+  EnableDebugOutput();
+  PrintGpuInfo();
+}
+
+void Application::EnableDebugOutput() const noexcept {
+  GLint flags{};
+  glGetIntegerv(GL_CONTEXT_FLAGS, &flags);
+  if (flags & GL_CONTEXT_FLAG_DEBUG_BIT) {
+    glEnable(GL_DEBUG_OUTPUT);
+    glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+    glDebugMessageCallback(MessageCallback, nullptr);
+    glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DEBUG_SEVERITY_NOTIFICATION, 0, nullptr, GL_FALSE);
+  }
+}
+
+void Application::PrintGpuInfo() const noexcept {
+  const GLubyte* vendor = glGetString(GL_VENDOR);                  // 显卡厂商 (Vendor)
+  const GLubyte* renderer = glGetString(GL_RENDERER);              // 显卡型号 / 渲染器名称 (Renderer)
+  const GLubyte* version = glGetString(GL_VERSION);                // 当前支持的 OpenGL 版本 (Version)
+  const GLubyte* glsl = glGetString(GL_SHADING_LANGUAGE_VERSION);  // 着色语言 (GLSL) 版本
+
+  auto safe_gl_str = [](const GLubyte* str) { return str ? reinterpret_cast<const char*>(str) : "Unknown"; };
+
+  std::cout << "Vendor: " << safe_gl_str(vendor) << "\n";
+  std::cout << "Renderer: " << safe_gl_str(renderer) << "\n";
+  std::cout << "Version: " << safe_gl_str(version) << "\n";
+  std::cout << "GLSL: " << safe_gl_str(glsl) << "\n";
 }
 
 void Application::ShutdownWindow() noexcept {

@@ -56,6 +56,8 @@ private:
   void ShutdownWindow() noexcept;
   void InitializeImGui() const;
   void ShutdownImGui() const noexcept;
+  void EnableDebugOutput() const noexcept;
+  void PrintGpuInfo() const noexcept;
   bool IsMouseCapturedByImGui() const noexcept;
 
   static Application& GetApplication(GLFWwindow* window);
