@@ -14,7 +14,7 @@ public:
 
   explicit Buffer(GLsizeiptr size, GLbitfield storage_flags = 0);
 
-  Buffer(std::span<const std::byte> data, GLbitfield storage_flags = 0);
+  explicit Buffer(std::span<const std::byte> data, GLbitfield storage_flags = 0);
 
   template <typename T>
     requires std::is_trivially_copyable_v<T>
