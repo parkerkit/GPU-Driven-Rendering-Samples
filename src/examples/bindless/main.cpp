@@ -1,7 +1,7 @@
 // 1. Texture Bindless
 // 2. Buffer Bindless
 
-#define TEST2
+#define TEST1
 
 #ifdef TEST1
 
@@ -69,7 +69,12 @@ protected:
     m_drawable->Draw();
   }
 
-  void OnShutdown() override { glMakeTextureHandleNonResidentARB(m_texture_handle); }
+  void OnShutdown() override {
+    glMakeTextureHandleNonResidentARB(m_texture_handle);
+    m_texture.reset();
+    m_drawable.reset();
+    m_shader.reset();
+  }
 
 private:
   std::unique_ptr<fw::GraphicsShader> m_shader{};
@@ -86,8 +91,6 @@ APPLICATION_MAIN(TestApp)
 
 #include <framework.h>
 #include <imgui.h>
-
-#include <array>
 
 class TestApp : public fw::Application {
 protected:
@@ -122,31 +125,6 @@ protected:
     glGenVertexArrays(1, &m_vao);
   }
 
-  void OnImGui() override {
-    ImGui::Begin("ImGui");
-
-    if (ImGui::Button("Reset camera")) {
-      GetCameraController()->ResetCamera(m_bounds);
-    }
-
-    int camera_type_index{static_cast<int>(GetCamera()->GetProjectionType())};
-    constexpr int camera_type_count{2};
-    constexpr std::array<const char*, camera_type_count> camera_type_names{"Perspective", "Orthographic"};
-    if (ImGui::Combo("Camera type", &camera_type_index, camera_type_names.data(), camera_type_count)) {
-      GetCameraController()->SetProjectionType(static_cast<fw::Camera::ProjectionType>(camera_type_index));
-    }
-
-    static int s_view_mode_index{};
-    constexpr int view_mode_count{7};
-    constexpr std::array<const char*, view_mode_count> view_mode_names = {"Custom", "Top",  "Bottom", "Front",
-                                                                          "Back",   "Left", "Right"};
-    if (ImGui::Combo("View mode", &s_view_mode_index, view_mode_names.data(), view_mode_count)) {
-      GetCameraController()->SetViewMode(static_cast<fw::CameraController::ViewMode>(s_view_mode_index), m_bounds);
-    }
-
-    ImGui::End();
-  }
-
   void OnRender() override {
     glClearColor(0.1F, 0.2F, 0.3F, 1.0F);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -161,12 +139,19 @@ protected:
     glDrawArrays(GL_TRIANGLES, 0, 3);
   }
 
-  void OnShutdown() override { glMakeNamedBufferNonResidentNV(m_vbo->GetHandle()); }
+  void OnShutdown() override {
+    glMakeNamedBufferNonResidentNV(m_vbo->GetHandle());
+    glDeleteVertexArrays(1, &m_vao);
+    m_vbo.reset();
+    m_drawable2.reset();
+    m_drawable1.reset();
+    m_shader.reset();
+  }
 
 private:
+  std::unique_ptr<fw::GraphicsShader> m_shader{};
   std::unique_ptr<fw::Drawable> m_drawable1{};
   std::unique_ptr<fw::Drawable> m_drawable2{};
-  std::unique_ptr<fw::GraphicsShader> m_shader{};
   std::unique_ptr<fw::Buffer> m_vbo{};
   fw::AABB m_bounds{};
   GLuint m_vao{};
