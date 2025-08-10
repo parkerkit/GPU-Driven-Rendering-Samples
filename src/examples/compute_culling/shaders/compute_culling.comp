@@ -1,0 +1,68 @@
+#version 460 core
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+struct FrustumPlane {
+    vec3 normal;
+    float d;
+};
+
+struct GPUInstanceData {
+    mat4 worldMatrix;
+    vec4 boundingSphere; // xyz: center, w: radius
+    uint meshID;
+    uint materialID;
+    uint padding[2];
+};
+
+layout(std430, binding = 0) readonly buffer InstanceBuffer {
+    GPUInstanceData instances[];
+};
+
+layout(std430, binding = 2) writeonly buffer VisibleInstanceBuffer {
+    uint visibleInstanceIDs[];
+};
+
+layout(std430, binding = 3) buffer CountBuffer {
+    uint visibleCount;
+};
+
+uniform uint u_TotalInstances;
+layout (std140, binding = 0) uniform FrustumBlock {
+    FrustumPlane u_FrustumPlanes[6];
+};
+
+// 判断包围球是否在视锥体内
+bool IsSphereInFrustum(vec3 center, float radius) {
+    for (int i = 0; i < 6; ++i) {
+        // 计算点到平面距离
+        float dist = dot(u_FrustumPlanes[i].normal, center) + u_FrustumPlanes[i].d;
+        // 如果球体完全落到任意平面的背面，直接判定为不可见
+        if (dist < -radius) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void main() {
+    uint gID = gl_GlobalInvocationID.x;
+
+    // 边界检查：避免线程越界访问 Buffer
+    if (gID >= u_TotalInstances) return;
+
+    GPUInstanceData instance = instances[gID];
+
+    // 获取物体世界坐标下的包围球
+    vec3 sphereCenter = instance.boundingSphere.xyz;
+    float sphereRadius = instance.boundingSphere.w;
+
+    // 执行视锥剔除测试
+    if (IsSphereInFrustum(sphereCenter, sphereRadius)) {
+        // 关键点：使用 atomicAdd 在 GPU 上安全分配连续写入位置
+        uint writeIndex = atomicAdd(visibleCount, 1);
+
+        // 将可见物体的全局索引保存入紧凑列表中
+        visibleInstanceIDs[writeIndex] = gID;
+    }
+}
