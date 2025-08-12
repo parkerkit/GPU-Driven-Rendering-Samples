@@ -1,0 +1,34 @@
+#version 460 core
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(binding = 0) uniform sampler2D u_HiZTexture;
+layout(r32f, binding = 0) uniform writeonly image2D u_DestinationMip;
+
+uniform int u_SourceMip;
+
+void main() {
+    ivec2 destination_coordinate = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 destination_size = imageSize(u_DestinationMip);
+    if (any(greaterThanEqual(destination_coordinate, destination_size))) {
+        return;
+    }
+
+    ivec2 source_size = textureSize(u_HiZTexture, u_SourceMip);
+
+    // 按真实源/目标尺寸映射覆盖区，防止奇数尺寸缩减时遗漏最后一行或最后一列。
+    ivec2 source_begin = (destination_coordinate * source_size) / destination_size;
+    ivec2 numerator = (destination_coordinate + ivec2(1)) * source_size;
+    ivec2 source_end = (numerator + destination_size - ivec2(1)) / destination_size;
+    source_end = clamp(source_end, source_begin + ivec2(1), source_size);
+
+    // 普通深度下近处为 0、远处为 1；保存最大值才能做保守的完全遮挡判断。
+    float maximum_depth = 0.0;
+    for (int y = source_begin.y; y < source_end.y; ++y) {
+        for (int x = source_begin.x; x < source_end.x; ++x) {
+            maximum_depth = max(maximum_depth, texelFetch(u_HiZTexture, ivec2(x, y), u_SourceMip).r);
+        }
+    }
+
+    imageStore(u_DestinationMip, destination_coordinate, vec4(maximum_depth, 0.0, 0.0, 0.0));
+}

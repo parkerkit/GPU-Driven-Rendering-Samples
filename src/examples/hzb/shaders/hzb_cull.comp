@@ -1,0 +1,147 @@
+#version 460 core
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+struct FrustumPlane {
+    vec3 normal;
+    float distance;
+};
+
+struct GpuInstanceData {
+    mat4 world_matrix;
+    vec4 bounding_sphere;
+    vec4 bounding_box_min;
+    vec4 bounding_box_max;
+    uint material_id;
+    uint padding[3];
+};
+
+struct DrawElementsIndirectCommand {
+    uint count;
+    uint instance_count;
+    uint first_index;
+    int base_vertex;
+    uint base_instance;
+};
+
+layout(std430, binding = 0) readonly buffer InstanceBuffer {
+    GpuInstanceData instances[];
+};
+
+layout(std430, binding = 2) writeonly buffer VisibleInstanceBuffer {
+    uint visible_instance_ids[];
+};
+
+layout(std430, binding = 3) buffer IndirectCommandBuffer {
+    DrawElementsIndirectCommand command;
+};
+
+layout(std140, binding = 0) uniform FrustumBlock {
+    FrustumPlane u_FrustumPlanes[6];
+};
+
+layout(binding = 0) uniform sampler2D u_HiZTexture;
+
+uniform mat4 u_ViewProjection;
+uniform uint u_TotalInstances;
+uniform int u_HiZMaxMip;
+uniform float u_DepthBias;
+uniform int u_EnableFrustumCulling;
+uniform int u_EnableOcclusionCulling;
+
+bool IsSphereInFrustum(vec3 center, float radius) {
+    for (int plane_index = 0; plane_index < 6; ++plane_index) {
+        FrustumPlane plane = u_FrustumPlanes[plane_index];
+        if (dot(plane.normal, center) + plane.distance < -radius) {
+            return false;
+        }
+    }
+    return true;
+}
+
+vec3 GetAabbCorner(vec3 bounding_box_min, vec3 bounding_box_max, uint corner_index) {
+    return vec3(
+        (corner_index & 1u) != 0u ? bounding_box_max.x : bounding_box_min.x,
+        (corner_index & 2u) != 0u ? bounding_box_max.y : bounding_box_min.y,
+        (corner_index & 4u) != 0u ? bounding_box_max.z : bounding_box_min.z
+    );
+}
+
+bool IsOccludedByHiZ(vec3 bounding_box_min, vec3 bounding_box_max) {
+    vec2 uv_min = vec2(1e30);
+    vec2 uv_max = vec2(-1e30);
+    float nearest_depth = 1.0;
+
+    for (uint corner_index = 0u; corner_index < 8u; ++corner_index) {
+        vec3 corner = GetAabbCorner(bounding_box_min, bounding_box_max, corner_index);
+        vec4 clip_position = u_ViewProjection * vec4(corner, 1.0);
+
+        // 包围盒跨过相机平面时投影矩形不再可靠，保守地保留该实例。
+        if (clip_position.w <= 0.0) {
+            return false;
+        }
+
+        vec3 ndc_position = clip_position.xyz / clip_position.w;
+        vec2 uv = ndc_position.xy * 0.5 + 0.5;
+        uv_min = min(uv_min, uv);
+        uv_max = max(uv_max, uv);
+        nearest_depth = min(nearest_depth, ndc_position.z * 0.5 + 0.5);
+    }
+
+    uv_min = clamp(uv_min, vec2(0.0), vec2(1.0));
+    uv_max = clamp(uv_max, vec2(0.0), vec2(1.0));
+    nearest_depth = clamp(nearest_depth, 0.0, 1.0);
+
+    // 退化或完全位于屏幕外的投影不参与遮挡判定，避免边界处误剔除。
+    if (any(greaterThanEqual(uv_min, uv_max))) {
+        return false;
+    }
+
+    vec2 viewport_size = vec2(textureSize(u_HiZTexture, 0));
+    vec2 pixel_extent = (uv_max - uv_min) * viewport_size;
+    float maximum_extent = max(pixel_extent.x, pixel_extent.y);
+    int mip_level = int(ceil(log2(max(maximum_extent, 1.0))));
+    mip_level = clamp(mip_level, 0, u_HiZMaxMip);
+
+    ivec2 mip_size = textureSize(u_HiZTexture, mip_level);
+    vec2 scaled_min = uv_min * vec2(mip_size);
+    vec2 scaled_max = uv_max * vec2(mip_size);
+    ivec2 texel_min = ivec2(floor(scaled_min));
+    ivec2 texel_max = ivec2(floor(max(scaled_max - vec2(1e-6), scaled_min)));
+    texel_min = clamp(texel_min, ivec2(0), mip_size - ivec2(1));
+    texel_max = clamp(texel_max, ivec2(0), mip_size - ivec2(1));
+
+    // 所选 mip 上通常只覆盖少量 texel；完整采样覆盖范围才能保证剔除结果保守。
+    float farthest_occluder_depth = 0.0;
+    for (int y = texel_min.y; y <= texel_max.y; ++y) {
+        for (int x = texel_min.x; x <= texel_max.x; ++x) {
+            farthest_occluder_depth = max(
+                farthest_occluder_depth,
+                texelFetch(u_HiZTexture, ivec2(x, y), mip_level).r
+            );
+        }
+    }
+
+    return nearest_depth > farthest_occluder_depth + u_DepthBias;
+}
+
+void main() {
+    uint instance_index = gl_GlobalInvocationID.x;
+    if (instance_index >= u_TotalInstances) {
+        return;
+    }
+
+    GpuInstanceData instance = instances[instance_index];
+    if (u_EnableFrustumCulling != 0 &&
+        !IsSphereInFrustum(instance.bounding_sphere.xyz, instance.bounding_sphere.w)) {
+        return;
+    }
+
+    if (u_EnableOcclusionCulling != 0 &&
+        IsOccludedByHiZ(instance.bounding_box_min.xyz, instance.bounding_box_max.xyz)) {
+        return;
+    }
+
+    uint visible_index = atomicAdd(command.instance_count, 1u);
+    visible_instance_ids[visible_index] = instance_index;
+}

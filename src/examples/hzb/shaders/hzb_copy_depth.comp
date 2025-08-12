@@ -1,0 +1,17 @@
+#version 460 core
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(binding = 0) uniform sampler2D u_DepthTexture;
+layout(r32f, binding = 0) uniform writeonly image2D u_HiZMipZero;
+
+void main() {
+    ivec2 coordinate = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 output_size = imageSize(u_HiZMipZero);
+    if (any(greaterThanEqual(coordinate, output_size))) {
+        return;
+    }
+
+    float depth = texelFetch(u_DepthTexture, coordinate, 0).r;
+    imageStore(u_HiZMipZero, coordinate, vec4(depth, 0.0, 0.0, 0.0));
+}
