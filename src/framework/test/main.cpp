@@ -3,8 +3,9 @@
 // 3. 计算着色器 + SSBO
 // 4. 纹理
 // 5. 模型创建 + 相机测试
+// 6. meshoptimizer 创建 meshlet
 
-#define TEST5
+#define TEST6
 
 #ifdef TEST1
 
@@ -379,3 +380,67 @@ private:
 APPLICATION_MAIN(TestApp)
 
 #endif  // TEST5
+
+#ifdef TEST6
+
+#include <framework.h>
+
+#include <cstdint>
+#include <iostream>
+
+int main() {
+  fw::PrimitiveData sphere = fw::Shapes::Sphere();
+  std::vector<glm::vec3> vertices = std::move(sphere.attributes.positions);
+  std::vector<std::uint32_t> indices = std::move(sphere.indices);
+
+  constexpr std::size_t max_vertices = 64;
+  constexpr std::size_t max_triangles = 126;
+  constexpr float cone_weight = 0.0F;
+
+  const std::size_t max_meshlets = meshopt_buildMeshletsBound(indices.size(), max_vertices, max_triangles);
+
+  std::vector<meshopt_Meshlet> meshlets(max_meshlets);
+
+  std::vector<std::uint32_t> meshlet_vertices(indices.size());
+  std::vector<std::uint8_t> meshlet_triangles(indices.size());
+
+  const std::size_t meshlet_count = meshopt_buildMeshlets(
+    meshlets.data(), meshlet_vertices.data(), meshlet_triangles.data(), indices.data(), indices.size(), &vertices[0].x,
+    vertices.size(), sizeof(glm::vec3), max_vertices, max_triangles, cone_weight);
+
+  meshlets.resize(meshlet_count);
+
+  std::cout << "meshlet count: " << meshlet_count << '\n';
+
+  for (std::size_t i = 0; i < meshlet_count; ++i) {
+    const meshopt_Meshlet& meshlet = meshlets[i];
+
+    std::cout << "\nMeshlet " << i << '\n';
+    std::cout << "  vertex_count   = " << meshlet.vertex_count << '\n';
+    std::cout << "  triangle_count = " << meshlet.triangle_count << '\n';
+
+    /*
+    std::cout << "  vertices: ";
+    for (std::size_t j = 0; j < meshlet.vertex_count; ++j) {
+      const uint32_t global_vertex_index = meshlet_vertices[meshlet.vertex_offset + j];
+      std::cout << global_vertex_index << ' ';
+    }
+
+    std::cout << "\n  triangles:\n";
+
+    for (std::size_t j = 0; j < meshlet.triangle_count; ++j) {
+      const std::size_t offset = meshlet.triangle_offset + j * 3;
+
+      const uint32_t i0 = meshlet_triangles[offset + 0];
+      const uint32_t i1 = meshlet_triangles[offset + 1];
+      const uint32_t i2 = meshlet_triangles[offset + 2];
+
+      std::cout << "    " << i0 << ", " << i1 << ", " << i2 << '\n';
+    }
+    */
+  }
+
+  return 0;
+}
+
+#endif  // TEST6

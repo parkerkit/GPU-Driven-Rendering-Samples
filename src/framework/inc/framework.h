@@ -9,6 +9,7 @@
 #include "camera_controller.h"
 #include "drawable.h"
 #include "image.h"
+#include "meshoptimizer.h"
 #include "primitive.h"
 #include "shader.h"
 #include "shapes.h"

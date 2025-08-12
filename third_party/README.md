@@ -27,6 +27,7 @@ ThirdParty::glm
 ThirdParty::imgui
 ThirdParty::stb_image
 ThirdParty::stb_image_write
+ThirdParty::meshoptimizer
 ```
 
 工程中的其他 Target 应通过：
@@ -47,6 +48,7 @@ target_link_libraries(Framework
         ThirdParty::imgui
         ThirdParty::stb_image
         ThirdParty::stb_image_write
+        ThirdParty::meshoptimizer
 
     PUBLIC
         ThirdParty::glm
@@ -74,6 +76,7 @@ link_directories(...)
 |Dear ImGui|1.92.9|Debug / Development UI|Static|
 |stb_image|2.30|图片读取与解码|Static Wrapper|
 |stb_image_write|1.16|图片编码与写入|Static Wrapper|
+|meshoptimizer|1.2|优化3D网格模型|Static Warpper|
 
 ---
 
@@ -573,6 +576,77 @@ third_party/stb/
 
 ---
 
+## meshoptimizer
+
+版本：
+
+```text
+v1.2
+```
+
+上游：
+
+```text
+https://github.com/zeux/meshoptimizer
+```
+
+用途：
+
+```text
+提升 GPU 渲染性能
+极致压缩与快速传输
+简化与 LOD 生成
+```
+
+meshoptimizer 使用 src 目录下的源码编译，不使用官方的 CMakeLists.txt
+
+不编译：
+
+```text
+demo
+extern
+gltf
+js
+tools
+```
+
+meshoptimizer 强制构建为静态库。
+
+### 保留内容
+
+```text
+meshoptimizer/
+├── src/
+└── LICENSE.md
+```
+
+其中：
+
+```text
+src/
+```
+
+保持完整，不删除任何源码。
+
+### 不保留
+
+上游以下内容不属于 Framework 构建所需内容：
+
+```text
+.github/
+demo/
+extern/
+gltf/
+js/
+tools/
+```
+
+以及其他 CI、Git 仓库元数据和开发辅助文件。
+
+`LICENSE.md` 必须始终保留。
+
+---
+
 ## Third-Party Source 修改原则
 
 原则上：
@@ -686,8 +760,12 @@ third_party/
 │   ├── imstb_textedit.h
 │   └── imstb_truetype.h
 │
-└── stb/
-    ├── stb_image.h
-    ├── stb_image_write.h
-    └── LICENSE
+├── stb/
+│   ├── stb_image.h
+│   ├── stb_image_write.h
+│   └── LICENSE
+│
+└── meshoptimizer/
+    ├── src/
+    └── LICENSE.md
 ```

@@ -41,6 +41,7 @@ target_link_libraries(${lib_name}
         ThirdParty::imgui
         ThirdParty::glm
         ThirdParty::stb_image
+        ThirdParty::meshoptimizer
 )
 
 project_setup_target(${lib_name})
