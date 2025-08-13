@@ -77,6 +77,8 @@ public:
   void DrawInstanced(GLsizei instance_count) const noexcept;
   void DrawInstanced(GLsizei instance_count, GLuint base_instance) const noexcept;
   void DrawIndirect(GLuint indirect_buffer, GLintptr offset) const noexcept;
+  void DrawMultiIndirect(GLuint indirect_buffer, GLsizei draw_count, GLintptr byte_offset = 0,
+                         GLsizei stride = 0) const noexcept;
 
 private:
   struct VertexBufferBinding {

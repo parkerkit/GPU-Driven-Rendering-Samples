@@ -35,7 +35,7 @@ GLuint Shader::CompileShader(GLenum shader_type, const std::filesystem::path& so
   if (compile_status == GL_FALSE) {
     const std::string log{GetShaderLog(shader)};
     glDeleteShader(shader);
-    throw std::runtime_error{"Failed to compile shader:\n" + log};
+    throw std::runtime_error{"Failed to compile shader: " + source_path.string() + "\n" + log};
   }
 
   return shader;
