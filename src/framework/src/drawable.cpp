@@ -76,3 +76,23 @@ void Drawable::DrawMultiIndirect(GLuint indirect_buffer, GLsizei draw_count, GLi
 
   glMultiDrawArraysIndirect(m_primitive, offset, draw_count, stride);
 }
+
+void Drawable::DrawMultiIndirectCount(GLuint indirect_buffer, GLuint parameter_buffer, GLsizei max_draw_count,
+                                      GLintptr indirect_byte_offset, GLintptr draw_count_byte_offset,
+                                      GLsizei stride) const noexcept {
+  m_vertex_array.Bind();
+
+  glBindBuffer(GL_DRAW_INDIRECT_BUFFER, indirect_buffer);
+  glBindBuffer(GL_PARAMETER_BUFFER_ARB, parameter_buffer);
+
+  // NOLINTNEXTLINE(performance-no-int-to-ptr)
+  const void* indirect_offset = reinterpret_cast<const void*>(indirect_byte_offset);
+
+  if (m_index_buffer.has_value()) {
+    glMultiDrawElementsIndirectCount(m_primitive, m_index_type, indirect_offset, draw_count_byte_offset, max_draw_count,
+                                     stride);
+    return;
+  }
+
+  glMultiDrawArraysIndirectCount(m_primitive, indirect_offset, draw_count_byte_offset, max_draw_count, stride);
+}

@@ -79,6 +79,9 @@ public:
   void DrawIndirect(GLuint indirect_buffer, GLintptr offset) const noexcept;
   void DrawMultiIndirect(GLuint indirect_buffer, GLsizei draw_count, GLintptr byte_offset = 0,
                          GLsizei stride = 0) const noexcept;
+  void DrawMultiIndirectCount(GLuint indirect_buffer, GLuint parameter_buffer, GLsizei max_draw_count,
+                              GLintptr indirect_byte_offset = 0, GLintptr draw_count_byte_offset = 0,
+                              GLsizei stride = 0) const noexcept;
 
 private:
   struct VertexBufferBinding {
