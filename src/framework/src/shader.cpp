@@ -152,3 +152,22 @@ ComputeShader::ComputeShader(const std::filesystem::path& source_path) {
 void ComputeShader::Dispatch(GLuint group_x, GLuint group_y, GLuint group_z) const noexcept {
   glDispatchCompute(group_x, group_y, group_z);
 }
+
+MeshShader::MeshShader(const MeshShaderPaths& paths) {
+  const GLuint mesh_shader{CompileShader(GL_MESH_SHADER_NV, paths.mesh)};
+  const GLuint fragment_shader{CompileShader(GL_FRAGMENT_SHADER, paths.fragment)};
+
+  glAttachShader(GetHandle(), mesh_shader);
+  glAttachShader(GetHandle(), fragment_shader);
+  glLinkProgram(GetHandle());
+  glDeleteShader(mesh_shader);
+  glDeleteShader(fragment_shader);
+
+  GLint link_status{};
+  glGetProgramiv(GetHandle(), GL_LINK_STATUS, &link_status);
+  if (link_status == GL_FALSE) {
+    const std::string log{GetProgramLog(GetHandle())};
+    glDeleteProgram(GetHandle());
+    throw std::runtime_error{"Failed to link shader program:\n" + log};
+  }
+}

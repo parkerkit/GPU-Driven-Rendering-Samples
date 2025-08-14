@@ -15,6 +15,12 @@ struct ShaderPaths {
   std::optional<std::filesystem::path> tess_eval{};
 };
 
+struct MeshShaderPaths {
+  std::filesystem::path mesh{};
+  std::filesystem::path fragment{};
+  std::optional<std::filesystem::path> task{};
+};
+
 class Shader {
 public:
   virtual ~Shader() noexcept;
@@ -59,5 +65,10 @@ public:
   explicit ComputeShader(const std::filesystem::path& source_path);
 
   void Dispatch(GLuint group_x, GLuint group_y = 1, GLuint group_z = 1) const noexcept;
+};
+
+class MeshShader final : public Shader {
+public:
+  explicit MeshShader(const MeshShaderPaths& paths);
 };
 }  // namespace fw

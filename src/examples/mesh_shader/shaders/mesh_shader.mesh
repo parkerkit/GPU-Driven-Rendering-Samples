@@ -1,0 +1,98 @@
+#version 460 core
+#extension GL_NV_mesh_shader : require
+
+layout(local_size_x = 32) in;
+// 与 CPU 端 BuildMeshlets 的容量上限保持一致。
+layout(triangles, max_vertices = 64, max_primitives = 64) out;
+
+struct Meshlet
+{
+    uint vertex_offset;
+    uint triangle_offset;
+    uint vertex_count;
+    uint triangle_count;
+    vec4 bounding_sphere;
+};
+
+// vec4 顶点布局与 CPU 上传数据一致，std430 数组步长为 16 字节。
+layout(std430, binding = 0) readonly buffer VertexBuffer
+{
+    vec4 vertices[];
+};
+
+layout(std430, binding = 1) readonly buffer MeshletBuffer
+{
+    Meshlet meshlets[];
+};
+
+// 将 meshlet 局部顶点索引映射到原始网格顶点索引。
+layout(std430, binding = 2) readonly buffer MeshletVertexBuffer
+{
+    uint meshlet_vertices[];
+};
+
+// 三个局部索引分别存放于 uint 的低三个字节，不依赖 8-bit storage 扩展。
+layout(std430, binding = 3) readonly buffer MeshletTriangleBuffer
+{
+    uint meshlet_triangles[];
+};
+
+uniform mat4 u_view_projection;
+layout(std140, binding = 0) uniform FrustumPlanesBlock
+{
+    vec4 frustum_planes[6];
+};
+
+bool IsSphereInFrustum(vec4 sphere)
+{
+    for (int plane_index = 0; plane_index < 6; ++plane_index)
+    {
+        vec4 plane = frustum_planes[plane_index];
+        if (dot(plane.xyz, sphere.xyz) + plane.w < -sphere.w)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+void main()
+{
+    // 无 task shader 时，一次 mesh task 对应一个 meshlet。
+    uint meshlet_id = gl_WorkGroupID.x;
+    Meshlet meshlet = meshlets[meshlet_id];
+    bool is_visible = IsSphereInFrustum(meshlet.bounding_sphere);
+
+    // NV 接口使用图元数量和扁平索引数组；数量仅由一个 invocation 写入。
+    if (gl_LocalInvocationIndex == 0u)
+    {
+        gl_PrimitiveCountNV = is_visible ? meshlet.triangle_count : 0u;
+    }
+
+    // 判断只依赖 workgroup 共享的只读数据，所有 invocation 一致退出。
+    if (!is_visible)
+    {
+        return;
+    }
+
+    for (uint local_vertex = gl_LocalInvocationIndex;
+         local_vertex < meshlet.vertex_count; local_vertex += gl_WorkGroupSize.x)
+    {
+        uint global_vertex = meshlet_vertices[meshlet.vertex_offset + local_vertex];
+        gl_MeshVerticesNV[local_vertex].gl_Position = u_view_projection * vertices[global_vertex];
+    }
+
+    for (uint triangle_id = gl_LocalInvocationIndex;
+         triangle_id < meshlet.triangle_count; triangle_id += gl_WorkGroupSize.x)
+    {
+        uint packed_triangle = meshlet_triangles[meshlet.triangle_offset + triangle_id];
+        uint base = triangle_id * 3u;
+        gl_PrimitiveIndicesNV[base] = packed_triangle & 0xffu;
+        gl_PrimitiveIndicesNV[base + 1u] = (packed_triangle >> 8u) & 0xffu;
+        gl_PrimitiveIndicesNV[base + 2u] = (packed_triangle >> 16u) & 0xffu;
+
+        // 本示例用内建图元 ID 传递 meshlet ID，避免自定义颜色输出数组。
+        // 每个输出图元都必须写入，片元阶段才能读取确定的 gl_PrimitiveID。
+        gl_MeshPrimitivesNV[triangle_id].gl_PrimitiveID = int(meshlet_id);
+    }
+}
