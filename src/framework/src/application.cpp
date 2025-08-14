@@ -5,11 +5,27 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 
+#include <exception>
 #include <iostream>
+#include <stdexcept>
+#include <string>
 
 using namespace fw;
 
 namespace {
+// 异常不能跨越 GLFW 的 C 回调边界，记录后交给主循环处理。
+template <typename Callback>
+void InvokeCallback(std::exception_ptr& pending_exception, Callback callback) noexcept {
+  if (pending_exception) {
+    return;
+  }
+  try {
+    callback();
+  } catch (...) {
+    pending_exception = std::current_exception();
+  }
+}
+
 void CheckGLFWResult(int result, std::string_view message) {
   if (result == GLFW_FALSE) {
     throw std::runtime_error{std::string{message}};
@@ -169,43 +185,68 @@ CameraController* Application::GetCameraController() noexcept { return m_camera_
 
 const CameraController* Application::GetCameraController() const noexcept { return m_camera_controller.get(); }
 
+Application::~Application() noexcept {
+  // 派生类成员已完成析构，最后再销毁 ImGui 和窗口中的 Context。
+  ShutdownImGui();
+  ShutdownWindow();
+}
+
 void Application::Run() {
+  if (m_is_glfw_initialized) {
+    throw std::logic_error{"Application::Run() can only be called once."};
+  }
   InitializeWindow();
   InitializeImGui();
 
-  OnInit();
+  try {
+    OnInit();
 
-  double previous_time{glfwGetTime()};
-  while (glfwWindowShouldClose(m_window) == GLFW_FALSE) {
-    const double current_time{glfwGetTime()};
-    const double delta_time{current_time - previous_time};
-    previous_time = current_time;
+    double previous_time{glfwGetTime()};
+    while (glfwWindowShouldClose(m_window) == GLFW_FALSE) {
+      const double current_time{glfwGetTime()};
+      const double delta_time{current_time - previous_time};
+      previous_time = current_time;
 
-    glfwPollEvents();
-    OnUpdate(delta_time);
-
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
-    ImGui::NewFrame();
-    OnImGui();
-    ImGui::Render();
-
-    if (m_camera_controller) {
-      if (IsMouseCapturedByImGui()) {
-        m_camera_controller->ResetState();
+      glfwPollEvents();
+      if (m_callback_exception) {
+        std::rethrow_exception(m_callback_exception);
       }
-      // UI 和业务逻辑也可能改变相机，渲染前统一更新裁剪范围。
-      m_camera_controller->Update(delta_time);
+      OnUpdate(delta_time);
+
+      ImGui_ImplOpenGL3_NewFrame();
+      ImGui_ImplGlfw_NewFrame();
+      ImGui::NewFrame();
+      OnImGui();
+      ImGui::Render();
+
+      if (m_camera_controller) {
+        if (IsMouseCapturedByImGui()) {
+          m_camera_controller->ResetState();
+        }
+        // UI 和业务逻辑也可能改变相机，渲染前统一更新裁剪范围。
+        m_camera_controller->Update(delta_time);
+      }
+
+      OnRender();
+      ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+      glfwSwapBuffers(m_window);
+      if (m_callback_exception) {
+        std::rethrow_exception(m_callback_exception);
+      }
     }
 
-    OnRender();
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-    glfwSwapBuffers(m_window);
+  } catch (...) {
+    try {
+      OnShutdown();
+    } catch (const std::exception& error) {
+      std::cerr << "Application cleanup failed: " << error.what() << '\n';
+    } catch (...) {
+      std::cerr << "Unknown application cleanup failure\n";
+    }
+    // 清理失败也保留最初的初始化或运行异常。
+    throw;
   }
-
   OnShutdown();
-  ShutdownImGui();
-  ShutdownWindow();
 }
 
 void Application::OnInit() {}
@@ -214,7 +255,9 @@ void Application::OnRender() {}
 void Application::OnImGui() {}
 void Application::OnShutdown() {}
 
-bool Application::IsMouseCapturedByImGui() const noexcept { return ImGui::GetIO().WantCaptureMouse; }
+bool Application::IsMouseCapturedByImGui() const noexcept {
+  return m_has_imgui_context && ImGui::GetIO().WantCaptureMouse;
+}
 
 void Application::OnFramebufferResized(int width, int height) {
   if (!m_camera_controller) {
@@ -289,6 +332,7 @@ void Application::InitializeWindow() {
     [](int error, const char* description) { std::cerr << "GLFW error [" << error << "]: " << description << '\n'; });
 
   CheckGLFWResult(glfwInit(), "Failed to initialize GLFW.");
+  m_is_glfw_initialized = true;
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, m_config.gl_major_version);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, m_config.gl_minor_version);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -298,7 +342,6 @@ void Application::InitializeWindow() {
   m_window =
     glfwCreateWindow(m_config.window_width, m_config.window_height, m_config.window_name.data(), nullptr, nullptr);
   if (m_window == nullptr) {
-    glfwTerminate();
     throw std::runtime_error{"Failed to create GLFW window."};
   }
 
@@ -354,21 +397,40 @@ void Application::ShutdownWindow() noexcept {
     glfwDestroyWindow(m_window);
     m_window = nullptr;
   }
-  glfwTerminate();
+  if (m_is_glfw_initialized) {
+    glfwTerminate();
+    m_is_glfw_initialized = false;
+  }
 }
 
-void Application::InitializeImGui() const {
+void Application::InitializeImGui() {
   IMGUI_CHECKVERSION();
-  ImGui::CreateContext();
+  if (ImGui::CreateContext() == nullptr) {
+    throw std::runtime_error{"Failed to create ImGui context."};
+  }
+  m_has_imgui_context = true;
   ImGui::StyleColorsDark();
-  ImGui_ImplGlfw_InitForOpenGL(m_window, true);
-  ImGui_ImplOpenGL3_Init("#version 330 core");
+  if (!ImGui_ImplGlfw_InitForOpenGL(m_window, true)) {
+    throw std::runtime_error{"Failed to initialize ImGui GLFW backend."};
+  }
+  if (!ImGui_ImplOpenGL3_Init("#version 330 core")) {
+    throw std::runtime_error{"Failed to initialize ImGui OpenGL backend."};
+  }
 }
 
-void Application::ShutdownImGui() const noexcept {
-  ImGui_ImplOpenGL3_Shutdown();
-  ImGui_ImplGlfw_Shutdown();
+void Application::ShutdownImGui() noexcept {
+  if (!m_has_imgui_context) {
+    return;
+  }
+  // 后端可能只初始化了一部分，只清理已创建的后端数据。
+  if (ImGui::GetIO().BackendRendererUserData != nullptr) {
+    ImGui_ImplOpenGL3_Shutdown();
+  }
+  if (ImGui::GetIO().BackendPlatformUserData != nullptr) {
+    ImGui_ImplGlfw_Shutdown();
+  }
   ImGui::DestroyContext();
+  m_has_imgui_context = false;
 }
 
 Application& Application::GetApplication(GLFWwindow* window) {
@@ -377,7 +439,8 @@ Application& Application::GetApplication(GLFWwindow* window) {
 
 void Application::FramebufferSizeCallback(GLFWwindow* window, int width, int height) {
   glViewport(0, 0, width, height);
-  GetApplication(window).OnFramebufferResized(width, height);
+  Application& application{GetApplication(window)};
+  InvokeCallback(application.m_callback_exception, [&] { application.OnFramebufferResized(width, height); });
 }
 
 void Application::WindowFocusCallback(GLFWwindow* window, int is_focused) {
@@ -395,7 +458,7 @@ void Application::CursorPositionCallback(GLFWwindow* window, double cursor_x, do
   application.m_last_cursor_x = cursor_x;
   application.m_last_cursor_y = cursor_y;
   application.m_has_cursor_position = true;
-  application.OnCursorMoved(delta_x, delta_y);
+  InvokeCallback(application.m_callback_exception, [&] { application.OnCursorMoved(delta_x, delta_y); });
 }
 
 void Application::MouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
@@ -409,14 +472,15 @@ void Application::MouseButtonCallback(GLFWwindow* window, int button, int action
   auto temp_act = GLFWActionToInputAction(action);
   auto temp_mod = GLFWModToModifiers(mods);
 
-  application.OnMouseButton(temp_btn, temp_act, temp_mod);
+  InvokeCallback(application.m_callback_exception, [&] { application.OnMouseButton(temp_btn, temp_act, temp_mod); });
 }
 
 void Application::ScrollCallback(GLFWwindow* window, double offset_x, double offset_y) {
   static_cast<void>(offset_x);
   auto temp_mod = GetCurrentModifiers(window);
 
-  GetApplication(window).OnScrolled(offset_y, temp_mod);
+  Application& application{GetApplication(window)};
+  InvokeCallback(application.m_callback_exception, [&] { application.OnScrolled(offset_y, temp_mod); });
 }
 
 void Application::KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
@@ -426,5 +490,6 @@ void Application::KeyCallback(GLFWwindow* window, int key, int scancode, int act
   auto temp_act = GLFWActionToInputAction(action);
   auto temp_mod = GLFWModToModifiers(mods);
 
-  GetApplication(window).OnKey(temp_key, temp_act, temp_mod);
+  Application& application{GetApplication(window)};
+  InvokeCallback(application.m_callback_exception, [&] { application.OnKey(temp_key, temp_act, temp_mod); });
 }

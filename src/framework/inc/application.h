@@ -5,6 +5,7 @@
 #endif
 #include <GLFW/glfw3.h>
 
+#include <exception>
 #include <memory>
 #include <string_view>
 
@@ -24,7 +25,7 @@ struct AppConfig {
 class Application {
 public:
   Application() = default;
-  virtual ~Application() = default;
+  virtual ~Application() noexcept;
 
   Application(const Application&) = delete;
   Application& operator=(const Application&) = delete;
@@ -32,6 +33,8 @@ public:
   Application& operator=(Application&&) = delete;
 
   void SetConfig(const AppConfig& config);
+  /// @brief 每个实例只运行一次；窗口和 Context 在对象析构时释放。
+  /// @details 派生类成员析构期间仍保留 Context，供 OpenGL 资源清理使用。
   void Run();
 
 protected:
@@ -39,6 +42,7 @@ protected:
   virtual void OnUpdate(double delta_time);
   virtual void OnRender();
   virtual void OnImGui();
+  // OnInit 开始后，成功或失败都会调用；实现需允许资源仅部分创建。
   virtual void OnShutdown();
   virtual void OnFramebufferResized(int width, int height);
   virtual void OnCursorMoved(double delta_x, double delta_y);
@@ -54,8 +58,8 @@ protected:
 private:
   void InitializeWindow();
   void ShutdownWindow() noexcept;
-  void InitializeImGui() const;
-  void ShutdownImGui() const noexcept;
+  void InitializeImGui();
+  void ShutdownImGui() noexcept;
   void EnableDebugOutput() const noexcept;
   void PrintGpuInfo() const noexcept;
   bool IsMouseCapturedByImGui() const noexcept;
@@ -71,6 +75,9 @@ private:
 private:
   AppConfig m_config{};
   GLFWwindow* m_window{};
+  bool m_is_glfw_initialized{false};
+  bool m_has_imgui_context{false};
+  std::exception_ptr m_callback_exception{};
   double m_last_cursor_x{};
   double m_last_cursor_y{};
   bool m_has_cursor_position{false};

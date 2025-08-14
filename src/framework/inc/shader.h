@@ -2,9 +2,12 @@
 
 #include <glad/gl.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <glm/glm.hpp>
 #include <optional>
+#include <string>
+#include <string_view>
 
 namespace fw {
 struct ShaderPaths {
@@ -36,12 +39,13 @@ public:
   void Bind() const noexcept;
   void UnBind() const noexcept;
 
-  void SetMat4(std::string_view name, const glm::mat4& value) const noexcept;
-  void SetVec3(std::string_view name, const glm::vec3& value) const noexcept;
-  void SetVec2(std::string_view name, const glm::vec2& value) const noexcept;
-  void SetFloat(std::string_view name, float value) const noexcept;
-  void SetInt(std::string_view name, int value) const noexcept;
-  void SetUInt(std::string_view name, uint32_t value) const noexcept;
+  // Setters require this program to be bound and throw if the uniform is not active.
+  void SetMat4(std::string_view name, const glm::mat4& value) const;
+  void SetVec3(std::string_view name, const glm::vec3& value) const;
+  void SetVec2(std::string_view name, const glm::vec2& value) const;
+  void SetFloat(std::string_view name, float value) const;
+  void SetInt(std::string_view name, int value) const;
+  void SetUInt(std::string_view name, uint32_t value) const;
 
 protected:
   Shader();

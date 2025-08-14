@@ -70,7 +70,10 @@ protected:
   }
 
   void OnShutdown() override {
-    glMakeTextureHandleNonResidentARB(m_texture_handle);
+    if (m_texture_handle != 0) {
+      glMakeTextureHandleNonResidentARB(m_texture_handle);
+      m_texture_handle = 0;
+    }
     m_texture.reset();
     m_drawable.reset();
     m_shader.reset();
@@ -140,7 +143,9 @@ protected:
   }
 
   void OnShutdown() override {
-    glMakeNamedBufferNonResidentNV(m_vbo->GetHandle());
+    if (m_vbo) {
+      glMakeNamedBufferNonResidentNV(m_vbo->GetHandle());
+    }
     glDeleteVertexArrays(1, &m_vao);
     m_vbo.reset();
     m_drawable2.reset();
