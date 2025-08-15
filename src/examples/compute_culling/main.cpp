@@ -1,11 +1,26 @@
 #include <framework.h>
+#include <gpu_timer.h>
 #include <imgui.h>
 
 #include <array>
+#include <chrono>
+#include <cstddef>
+#include <format>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <memory>
 #include <stdexcept>
+#include <string>
+
+namespace {
+std::string FormatGpuTiming(const char* label, fw::GpuTimer& timer) {
+  const auto milliseconds{timer.TakeAverageMilliseconds()};
+  if (milliseconds) {
+    return std::format("{} avg: {:.3f} ms\n", label, *milliseconds);
+  }
+  return std::format("{}: no new samples\n", label);
+}
+}  // namespace
 
 // Instance/Object 数据 (存入 SSBO)
 struct GpuInstanceData {
@@ -65,9 +80,17 @@ protected:
 
     GetCameraController()->SetSceneBounds(m_total_bounds);
     GetCameraController()->ResetCamera(m_total_bounds);
+
+    m_total_timer = std::make_unique<fw::GpuTimer>();
+    m_cull_timer = std::make_unique<fw::GpuTimer>();
+    m_draw_timer = std::make_unique<fw::GpuTimer>();
+    ResetTimingSamples();
   }
 
   void OnRender() override {
+    const auto cpu_begin{std::chrono::steady_clock::now()};
+    m_total_timer->Begin();
+
     glEnable(GL_DEPTH_TEST);
     glClearColor(0.1F, 0.2F, 0.3F, 1.0F);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -77,6 +100,7 @@ protected:
     // 复用可见列表前，确保上一帧顶点着色器的 SSBO 读取先完成。
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
+    m_cull_timer->Begin();
     GLuint zero{0};
     glClearNamedBufferSubData(m_count_buffer_ssbo->GetHandle(), GL_R32UI, 0, sizeof(GLuint), GL_RED_INTEGER,
                               GL_UNSIGNED_INT, &zero);
@@ -92,15 +116,22 @@ protected:
 
     // 分别保证后续顶点着色器读取可见列表、CPU 回读计数器时能看到 Compute 的写入。
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+    m_cull_timer->End();
 
     GLuint visible_count{};
     // 此示例保留同步读回，indirect_draw 示例再展示无需 CPU 回读的绘制路径。
     glGetNamedBufferSubData(m_count_buffer_ssbo->GetHandle(), 0, sizeof(visible_count), &visible_count);
     std::cout << "visible count: " << visible_count << '\n';
-    
+
+    m_draw_timer->Begin();
     m_render_shader->Bind();
     m_render_shader->SetMat4("u_ViewProjection", view_proj);
     m_drawable->DrawInstanced(static_cast<GLsizei>(visible_count));
+    m_draw_timer->End();
+    m_total_timer->End();
+    m_cpu_render_sum_ms +=
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cpu_begin).count();
+    ++m_cpu_sample_count;
   }
 
   void OnImGui() override {
@@ -112,6 +143,7 @@ protected:
     if (ImGui::Combo("instance 1", &s_material_index1, material_names1.data(), material_count1)) {
       m_instances[0].materialID = static_cast<uint32_t>(s_material_index1);
       m_instances_ssbo->SetData(0, std::as_bytes(std::span(m_instances)));
+      ResetTimingSamples();
     }
 
     static int s_material_index2{1};
@@ -120,12 +152,48 @@ protected:
     if (ImGui::Combo("instance 2", &s_material_index2, material_names2.data(), material_count2)) {
       m_instances[1].materialID = static_cast<uint32_t>(s_material_index2);
       m_instances_ssbo->SetData(0, std::as_bytes(std::span(m_instances)));
+      ResetTimingSamples();
     }
 
+    ImGui::Separator();
+    m_frame_time_sum_seconds += static_cast<double>(ImGui::GetIO().DeltaTime);
+    ++m_frame_sample_count;
+    const auto timing_now{std::chrono::steady_clock::now()};
+    if (timing_now - m_timing_update_time >= std::chrono::seconds{1}) {
+      const double frame_ms{m_frame_time_sum_seconds * 1000.0 / static_cast<double>(m_frame_sample_count)};
+      const double fps{frame_ms > 0.0 ? 1000.0 / frame_ms : 0.0};
+      m_timing_text = std::format("Frame avg: {:.2f} ms | {:.1f} FPS (includes UI / VSync)\n", frame_ms, fps);
+      if (m_cpu_sample_count > 0) {
+        m_timing_text +=
+          std::format("CPU render avg: {:.3f} ms\n", m_cpu_render_sum_ms / static_cast<double>(m_cpu_sample_count));
+      } else {
+        m_timing_text += "CPU render avg: no samples\n";
+      }
+      m_timing_text += FormatGpuTiming("GPU total", *m_total_timer);
+      m_timing_text += FormatGpuTiming("Cull", *m_cull_timer);
+      m_timing_text += FormatGpuTiming("Draw", *m_draw_timer);
+      m_cpu_render_sum_ms = 0.0;
+      m_cpu_sample_count = 0;
+      m_frame_time_sum_seconds = 0.0;
+      m_frame_sample_count = 0;
+      m_timing_update_time = timing_now;
+    }
+    ImGui::TextUnformatted(m_timing_text.empty() ? "Collecting 1-second timing samples..." : m_timing_text.c_str());
+    ImGui::PushTextWrapPos();
+    ImGui::TextUnformatted(
+      "Averages update once per second. CPU / GPU intervals exclude UI and swap; GPU samples are delayed.");
+    ImGui::TextUnformatted(
+      "CPU time includes synchronous readback and console output. GPU total can include submission gaps; "
+      "Draw starts after readback.");
+    ImGui::PopTextWrapPos();
     ImGui::End();
   }
 
   void OnShutdown() override {
+    m_total_timer.reset();
+    m_cull_timer.reset();
+    m_draw_timer.reset();
+
     for (const GpuMaterialData& material : m_materials) {
       if (material.baseColorTexHandle != 0) {
         glMakeTextureHandleNonResidentARB(material.baseColorTexHandle);
@@ -145,6 +213,19 @@ protected:
   }
 
 private:
+  void ResetTimingSamples() noexcept {
+    // 更换测量条件时，丢弃旧平均值以及 GPU 中尚未返回的旧条件样本。
+    m_total_timer->ResetSamples();
+    m_cull_timer->ResetSamples();
+    m_draw_timer->ResetSamples();
+    m_cpu_render_sum_ms = 0.0;
+    m_cpu_sample_count = 0;
+    m_frame_time_sum_seconds = 0.0;
+    m_frame_sample_count = 0;
+    m_timing_text.clear();
+    m_timing_update_time = std::chrono::steady_clock::now();
+  }
+
   void InitDrawable() {
     auto cube = fw::Shapes::Cube();
     m_cube_bounds = cube.bounds;
@@ -269,6 +350,16 @@ private:
   }
 
 private:
+  std::unique_ptr<fw::GpuTimer> m_total_timer{};
+  std::unique_ptr<fw::GpuTimer> m_cull_timer{};
+  std::unique_ptr<fw::GpuTimer> m_draw_timer{};
+  double m_cpu_render_sum_ms{};
+  std::size_t m_cpu_sample_count{};
+  double m_frame_time_sum_seconds{};
+  std::size_t m_frame_sample_count{};
+  std::chrono::steady_clock::time_point m_timing_update_time{};
+  std::string m_timing_text{};
+
   std::unique_ptr<fw::GraphicsShader> m_render_shader{};
   std::unique_ptr<fw::ComputeShader> m_cull_shader{};
 

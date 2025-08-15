@@ -1,19 +1,32 @@
 #include <framework.h>
 #include <glad/gl.h>
+#include <gpu_timer.h>
+#include <imgui.h>
 #include <meshoptimizer.h>
 
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <glm/glm.hpp>
 #include <memory>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace {
+std::string FormatGpuTiming(const char* label, fw::GpuTimer& timer) {
+  const auto milliseconds{timer.TakeAverageMilliseconds()};
+  if (milliseconds) {
+    return std::format("{} avg: {:.3f} ms\n", label, *milliseconds);
+  }
+  return std::format("{}: no new samples\n", label);
+}
+
 // 与 mesh_shader.mesh 的输出布局保持一致。
 constexpr size_t k_max_meshlet_vertices{64};
 constexpr size_t k_max_meshlet_triangles{64};
@@ -56,9 +69,15 @@ protected:
 
     GetCameraController()->SetSceneBounds(m_scene_bounds);
     GetCameraController()->ResetCamera(m_scene_bounds);
+
+    m_total_timer = std::make_unique<fw::GpuTimer>();
+    ResetTimingSamples();
   }
 
   void OnRender() override {
+    const auto cpu_begin{std::chrono::steady_clock::now()};
+    m_total_timer->Begin();
+
     glEnable(GL_DEPTH_TEST);
     glClearColor(0.1F, 0.2F, 0.3F, 1.0F);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -72,9 +91,47 @@ protected:
     m_mesh_shader->SetMat4("u_view_projection", view_projection);
 
     glDrawMeshTasksNV(0, m_meshlet_count);
+    m_total_timer->End();
+    m_cpu_render_sum_ms +=
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cpu_begin).count();
+    ++m_cpu_sample_count;
+  }
+
+  void OnImGui() override {
+    ImGui::Begin("Timings");
+    ImGui::Separator();
+    m_frame_time_sum_seconds += static_cast<double>(ImGui::GetIO().DeltaTime);
+    ++m_frame_sample_count;
+    const auto timing_now{std::chrono::steady_clock::now()};
+    if (timing_now - m_timing_update_time >= std::chrono::seconds{1}) {
+      const double frame_ms{m_frame_time_sum_seconds * 1000.0 / static_cast<double>(m_frame_sample_count)};
+      const double fps{frame_ms > 0.0 ? 1000.0 / frame_ms : 0.0};
+      m_timing_text = std::format("Frame avg: {:.2f} ms | {:.1f} FPS (includes UI / VSync)\n", frame_ms, fps);
+      if (m_cpu_sample_count > 0) {
+        m_timing_text +=
+          std::format("CPU render avg: {:.3f} ms\n", m_cpu_render_sum_ms / static_cast<double>(m_cpu_sample_count));
+      } else {
+        m_timing_text += "CPU render avg: no samples\n";
+      }
+      m_timing_text += FormatGpuTiming("GPU total", *m_total_timer);
+      m_timing_text += std::format("Total meshlets: {}\n", m_meshlet_count);
+      m_cpu_render_sum_ms = 0.0;
+      m_cpu_sample_count = 0;
+      m_frame_time_sum_seconds = 0.0;
+      m_frame_sample_count = 0;
+      m_timing_update_time = timing_now;
+    }
+    ImGui::TextUnformatted(m_timing_text.empty() ? "Collecting 1-second timing samples..." : m_timing_text.c_str());
+    ImGui::PushTextWrapPos();
+    ImGui::TextUnformatted(
+      "Averages update once per second. CPU / GPU intervals exclude UI and swap; GPU samples are delayed.");
+    ImGui::PopTextWrapPos();
+    ImGui::End();
   }
 
   void OnShutdown() override {
+    m_total_timer.reset();
+
     m_frustum_planes_ubo.reset();
     m_mesh_shader.reset();
 
@@ -85,6 +142,17 @@ protected:
   }
 
 private:
+  void ResetTimingSamples() noexcept {
+    // 更换测量条件时，丢弃旧平均值以及 GPU 中尚未返回的旧条件样本。
+    m_total_timer->ResetSamples();
+    m_cpu_render_sum_ms = 0.0;
+    m_cpu_sample_count = 0;
+    m_frame_time_sum_seconds = 0.0;
+    m_frame_sample_count = 0;
+    m_timing_text.clear();
+    m_timing_update_time = std::chrono::steady_clock::now();
+  }
+
   void InitDrawable() {
     const auto shape = fw::Shapes::Sphere();
 
@@ -208,6 +276,14 @@ private:
   }
 
 private:
+  std::unique_ptr<fw::GpuTimer> m_total_timer{};
+  double m_cpu_render_sum_ms{};
+  std::size_t m_cpu_sample_count{};
+  double m_frame_time_sum_seconds{};
+  std::size_t m_frame_sample_count{};
+  std::chrono::steady_clock::time_point m_timing_update_time{};
+  std::string m_timing_text{};
+
   std::unique_ptr<fw::MeshShader> m_mesh_shader{};
 
   fw::AABB m_scene_bounds{};

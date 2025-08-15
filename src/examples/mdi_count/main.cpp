@@ -1,12 +1,27 @@
 #include <framework.h>
+#include <gpu_timer.h>
 #include <imgui.h>
 
 #include <array>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <format>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <memory>
 #include <span>
+#include <string>
+
+namespace {
+std::string FormatGpuTiming(const char* label, fw::GpuTimer& timer) {
+  const auto milliseconds{timer.TakeAverageMilliseconds()};
+  if (milliseconds) {
+    return std::format("{} avg: {:.3f} ms\n", label, *milliseconds);
+  }
+  return std::format("{}: no new samples\n", label);
+}
+}  // namespace
 
 namespace {
 glm::vec4 GetMeshletColor(uint32_t meshlet_id) {
@@ -83,9 +98,17 @@ protected:
 
     GetCameraController()->SetSceneBounds(m_scene_bounds);
     GetCameraController()->ResetCamera(m_scene_bounds);
+
+    m_total_timer = std::make_unique<fw::GpuTimer>();
+    m_cull_timer = std::make_unique<fw::GpuTimer>();
+    m_draw_timer = std::make_unique<fw::GpuTimer>();
+    ResetTimingSamples();
   }
 
   void OnRender() override {
+    const auto cpu_begin{std::chrono::steady_clock::now()};
+    m_total_timer->Begin();
+
     glEnable(GL_DEPTH_TEST);
     glClearColor(0.1F, 0.2F, 0.3F, 1.0F);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -93,6 +116,7 @@ protected:
     auto view_proj = GetCamera()->GetViewProjectionMatrix();
     auto frustum_planes = ExtractFrustumPlanes(view_proj);
 
+    m_cull_timer->Begin();
     const GLuint zero{};
     glClearNamedBufferSubData(m_visible_count_ssbo->GetHandle(), GL_R32UI, 0, sizeof(GLuint), GL_RED_INTEGER,
                               GL_UNSIGNED_INT, &zero);
@@ -104,6 +128,8 @@ protected:
     m_cull_shader->Dispatch(static_cast<GLuint>((m_meshlet_count + 63) / 64));
 
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
+    m_cull_timer->End();
+    m_draw_timer->Begin();
 
     // glMultiDrawElementsIndirectCount 使用 comp 生成的 m_visible_count_ssbo，把它当作 PARAMETER_BUFFER 使用
     // 这样就不需要 cpu 清空 IndirectBuffer，并且 comp 仍然可以使用 compact 的方式生成 IndirectBuffer
@@ -112,9 +138,51 @@ protected:
     m_drawable->DrawMultiIndirectCount(m_indirect_buffer->GetHandle(), m_visible_count_ssbo->GetHandle(),
                                        static_cast<GLsizei>(m_meshlet_count), 0, 0,
                                        sizeof(DrawElementsIndirectCommand));
+    m_draw_timer->End();
+    m_total_timer->End();
+    m_cpu_render_sum_ms +=
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cpu_begin).count();
+    ++m_cpu_sample_count;
+  }
+
+  void OnImGui() override {
+    ImGui::Begin("Timings");
+    ImGui::Separator();
+    m_frame_time_sum_seconds += static_cast<double>(ImGui::GetIO().DeltaTime);
+    ++m_frame_sample_count;
+    const auto timing_now{std::chrono::steady_clock::now()};
+    if (timing_now - m_timing_update_time >= std::chrono::seconds{1}) {
+      const double frame_ms{m_frame_time_sum_seconds * 1000.0 / static_cast<double>(m_frame_sample_count)};
+      const double fps{frame_ms > 0.0 ? 1000.0 / frame_ms : 0.0};
+      m_timing_text = std::format("Frame avg: {:.2f} ms | {:.1f} FPS (includes UI / VSync)\n", frame_ms, fps);
+      if (m_cpu_sample_count > 0) {
+        m_timing_text +=
+          std::format("CPU render avg: {:.3f} ms\n", m_cpu_render_sum_ms / static_cast<double>(m_cpu_sample_count));
+      } else {
+        m_timing_text += "CPU render avg: no samples\n";
+      }
+      m_timing_text += FormatGpuTiming("GPU total", *m_total_timer);
+      m_timing_text += FormatGpuTiming("Cull", *m_cull_timer);
+      m_timing_text += FormatGpuTiming("Draw", *m_draw_timer);
+      m_cpu_render_sum_ms = 0.0;
+      m_cpu_sample_count = 0;
+      m_frame_time_sum_seconds = 0.0;
+      m_frame_sample_count = 0;
+      m_timing_update_time = timing_now;
+    }
+    ImGui::TextUnformatted(m_timing_text.empty() ? "Collecting 1-second timing samples..." : m_timing_text.c_str());
+    ImGui::PushTextWrapPos();
+    ImGui::TextUnformatted(
+      "Averages update once per second. CPU / GPU intervals exclude UI and swap; GPU samples are delayed.");
+    ImGui::PopTextWrapPos();
+    ImGui::End();
   }
 
   void OnShutdown() override {
+    m_total_timer.reset();
+    m_cull_timer.reset();
+    m_draw_timer.reset();
+
     m_frustums_ubo.reset();
     m_indirect_buffer.reset();
     m_visible_count_ssbo.reset();
@@ -128,6 +196,19 @@ protected:
   }
 
 private:
+  void ResetTimingSamples() noexcept {
+    // 更换测量条件时，丢弃旧平均值以及 GPU 中尚未返回的旧条件样本。
+    m_total_timer->ResetSamples();
+    m_cull_timer->ResetSamples();
+    m_draw_timer->ResetSamples();
+    m_cpu_render_sum_ms = 0.0;
+    m_cpu_sample_count = 0;
+    m_frame_time_sum_seconds = 0.0;
+    m_frame_sample_count = 0;
+    m_timing_text.clear();
+    m_timing_update_time = std::chrono::steady_clock::now();
+  }
+
   MeshletBuildResult InitDrawable() {
     auto shape = fw::Shapes::Sphere();
     m_scene_bounds = shape.bounds;
@@ -237,6 +318,16 @@ private:
   }
 
 private:
+  std::unique_ptr<fw::GpuTimer> m_total_timer{};
+  std::unique_ptr<fw::GpuTimer> m_cull_timer{};
+  std::unique_ptr<fw::GpuTimer> m_draw_timer{};
+  double m_cpu_render_sum_ms{};
+  std::size_t m_cpu_sample_count{};
+  double m_frame_time_sum_seconds{};
+  std::size_t m_frame_sample_count{};
+  std::chrono::steady_clock::time_point m_timing_update_time{};
+  std::string m_timing_text{};
+
   std::unique_ptr<fw::GraphicsShader> m_render_shader{};
   std::unique_ptr<fw::ComputeShader> m_cull_shader{};
 

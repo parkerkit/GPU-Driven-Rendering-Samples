@@ -1,17 +1,31 @@
 #include <framework.h>
+#include <gpu_timer.h>
 #include <imgui.h>
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <glm/gtc/matrix_transform.hpp>
 #include <memory>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <vector>
+
+namespace {
+std::string FormatGpuTiming(const char* label, fw::GpuTimer& timer) {
+  const auto milliseconds{timer.TakeAverageMilliseconds()};
+  if (milliseconds) {
+    return std::format("{} avg: {:.3f} ms\n", label, *milliseconds);
+  }
+  return std::format("{}: no new samples\n", label);
+}
+}  // namespace
 
 struct GpuInstanceData {
   glm::mat4 world_matrix{};
@@ -92,12 +106,22 @@ protected:
     GetCameraController()->ResetCamera(m_total_bounds);
 
     m_is_initialized = true;
+
+    m_total_timer = std::make_unique<fw::GpuTimer>();
+    m_cull_timer = std::make_unique<fw::GpuTimer>();
+    m_draw_timer = std::make_unique<fw::GpuTimer>();
+    m_depth_timer = std::make_unique<fw::GpuTimer>();
+    m_hiz_timer = std::make_unique<fw::GpuTimer>();
+    ResetTimingSamples();
   }
 
   void OnRender() override {
     if (m_framebuffer_width <= 0 || m_framebuffer_height <= 0) {
       return;
     }
+
+    const auto cpu_begin{std::chrono::steady_clock::now()};
+    m_total_timer->Begin();
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
@@ -111,11 +135,16 @@ protected:
 
     // 只把明确的不透明墙体作为遮挡体，避免透明几何导致错误剔除。
     if (m_enable_occlusion_culling) {
+      m_depth_timer->Begin();
       RenderOccluderDepth(view_projection, wall_model);
+      m_depth_timer->End();
+      m_hiz_timer->Begin();
       GenerateHiZPyramid();
+      m_hiz_timer->End();
     }
 
     // 先清空间接命令的实例计数，再由每个可见实例原子追加索引。
+    m_cull_timer->Begin();
     ResetIndirectInstanceCount();
     m_cull_shader->Bind();
     const auto frustum_planes{ExtractFrustumPlanes(view_projection)};
@@ -132,6 +161,8 @@ protected:
     m_cull_shader->Dispatch(group_count);
 
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
+    m_cull_timer->End();
+    m_draw_timer->Begin();
 
     // 线框墙体不会用最终深度测试遮住背后物体，便于直接观察 Hi-Z 剔除结果。
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -154,20 +185,63 @@ protected:
     m_render_shader->Bind();
     m_render_shader->SetMat4("u_ViewProjection", view_projection);
     m_cube_drawable->DrawIndirect(m_indirect_buffer->GetHandle(), 0);
+    m_draw_timer->End();
+    m_total_timer->End();
+    m_cpu_render_sum_ms +=
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cpu_begin).count();
+    ++m_cpu_sample_count;
   }
 
   void OnImGui() override {
     ImGui::Begin("Hi-Z Occlusion Culling");
-    ImGui::Checkbox("Enable frustum culling", &m_enable_frustum_culling);
-    ImGui::Checkbox("Enable Hi-Z Occlusion culling", &m_enable_occlusion_culling);
-    ImGui::Checkbox("Wall wireframe display", &m_show_wall_as_wireframe);
-    ImGui::SliderFloat("Depth offset", &m_depth_bias, 0.0F, 0.01F, "%.6f");
-    ImGui::DragFloat3("Wall location", &m_wall_translation.x, 0.1F);
+    bool has_settings_change{ImGui::Checkbox("Enable frustum culling", &m_enable_frustum_culling)};
+    has_settings_change |= ImGui::Checkbox("Enable Hi-Z Occlusion culling", &m_enable_occlusion_culling);
+    has_settings_change |= ImGui::Checkbox("Wall wireframe display", &m_show_wall_as_wireframe);
+    has_settings_change |= ImGui::SliderFloat("Depth offset", &m_depth_bias, 0.0F, 0.01F, "%.6f");
+    has_settings_change |= ImGui::DragFloat3("Wall location", &m_wall_translation.x, 0.1F);
     if (ImGui::Button("Reset Wall")) {
       m_wall_translation = k_initial_wall_translation;
+      has_settings_change = true;
+    }
+    if (has_settings_change) {
+      ResetTimingSamples();
     }
     ImGui::Separator();
     ImGui::TextUnformatted(std::format("instance count: {}", m_total_instances).c_str());
+    ImGui::Separator();
+    m_frame_time_sum_seconds += static_cast<double>(ImGui::GetIO().DeltaTime);
+    ++m_frame_sample_count;
+    const auto timing_now{std::chrono::steady_clock::now()};
+    if (timing_now - m_timing_update_time >= std::chrono::seconds{1}) {
+      const double frame_ms{m_frame_time_sum_seconds * 1000.0 / static_cast<double>(m_frame_sample_count)};
+      const double fps{frame_ms > 0.0 ? 1000.0 / frame_ms : 0.0};
+      m_timing_text = std::format("Frame avg: {:.2f} ms | {:.1f} FPS (includes UI / VSync)\n", frame_ms, fps);
+      if (m_cpu_sample_count > 0) {
+        m_timing_text +=
+          std::format("CPU render avg: {:.3f} ms\n", m_cpu_render_sum_ms / static_cast<double>(m_cpu_sample_count));
+      } else {
+        m_timing_text += "CPU render avg: no samples\n";
+      }
+      m_timing_text += FormatGpuTiming("GPU total", *m_total_timer);
+      if (m_enable_occlusion_culling) {
+        m_timing_text += FormatGpuTiming("Occluder depth", *m_depth_timer);
+        m_timing_text += FormatGpuTiming("Hi-Z generation", *m_hiz_timer);
+      } else {
+        m_timing_text += "Occluder depth / Hi-Z generation: disabled\n";
+      }
+      m_timing_text += FormatGpuTiming("Cull", *m_cull_timer);
+      m_timing_text += FormatGpuTiming("Draw", *m_draw_timer);
+      m_cpu_render_sum_ms = 0.0;
+      m_cpu_sample_count = 0;
+      m_frame_time_sum_seconds = 0.0;
+      m_frame_sample_count = 0;
+      m_timing_update_time = timing_now;
+    }
+    ImGui::TextUnformatted(m_timing_text.empty() ? "Collecting 1-second timing samples..." : m_timing_text.c_str());
+    ImGui::PushTextWrapPos();
+    ImGui::TextUnformatted(
+      "Averages update once per second. CPU / GPU intervals exclude UI and swap; GPU samples are delayed.");
+    ImGui::PopTextWrapPos();
     ImGui::End();
   }
 
@@ -182,6 +256,12 @@ protected:
   }
 
   void OnShutdown() override {
+    m_total_timer.reset();
+    m_cull_timer.reset();
+    m_draw_timer.reset();
+    m_depth_timer.reset();
+    m_hiz_timer.reset();
+
     for (const GpuMaterialData& material : m_materials) {
       if (material.base_color_texture_handle != 0) {
         glMakeTextureHandleNonResidentARB(material.base_color_texture_handle);
@@ -216,6 +296,21 @@ protected:
   }
 
 private:
+  void ResetTimingSamples() noexcept {
+    // 更换测量条件时，丢弃旧平均值以及 GPU 中尚未返回的旧条件样本。
+    m_total_timer->ResetSamples();
+    m_cull_timer->ResetSamples();
+    m_draw_timer->ResetSamples();
+    m_depth_timer->ResetSamples();
+    m_hiz_timer->ResetSamples();
+    m_cpu_render_sum_ms = 0.0;
+    m_cpu_sample_count = 0;
+    m_frame_time_sum_seconds = 0.0;
+    m_frame_sample_count = 0;
+    m_timing_text.clear();
+    m_timing_update_time = std::chrono::steady_clock::now();
+  }
+
   void InitializeDrawables() {
     const auto cube{fw::Shapes::Cube()};
     m_cube_bounds = cube.bounds;
@@ -461,6 +556,18 @@ private:
   }
 
 private:
+  std::unique_ptr<fw::GpuTimer> m_total_timer{};
+  std::unique_ptr<fw::GpuTimer> m_cull_timer{};
+  std::unique_ptr<fw::GpuTimer> m_draw_timer{};
+  std::unique_ptr<fw::GpuTimer> m_depth_timer{};
+  std::unique_ptr<fw::GpuTimer> m_hiz_timer{};
+  double m_cpu_render_sum_ms{};
+  std::size_t m_cpu_sample_count{};
+  double m_frame_time_sum_seconds{};
+  std::size_t m_frame_sample_count{};
+  std::chrono::steady_clock::time_point m_timing_update_time{};
+  std::string m_timing_text{};
+
   std::unique_ptr<fw::GraphicsShader> m_render_shader{};
   std::unique_ptr<fw::GraphicsShader> m_wall_shader{};
   std::unique_ptr<fw::GraphicsShader> m_depth_shader{};
