@@ -4,11 +4,16 @@
 
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <format>
+#include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <memory>
+#include <numbers>
+#include <span>
 #include <stdexcept>
 #include <string>
 
@@ -16,7 +21,7 @@ namespace {
 std::string FormatGpuTiming(const char* label, fw::GpuTimer& timer) {
   const auto milliseconds{timer.TakeAverageMilliseconds()};
   if (milliseconds) {
-    return std::format("{} avg: {:.3f} ms\n", label, *milliseconds);
+    return std::format("{}: {:.3f} ms\n", label, *milliseconds);
   }
   return std::format("{}: no new samples\n", label);
 }
@@ -60,6 +65,7 @@ protected:
     InitDrawable();
     InitMaterials();
     InitInstances();
+    InitDebugDrawables();
 
     m_instances_ssbo = std::make_unique<fw::Buffer>(std::as_bytes(std::span(m_instances)), GL_DYNAMIC_STORAGE_BIT);
     m_instances_ssbo->BindBase(GL_SHADER_STORAGE_BUFFER, 0);
@@ -95,7 +101,13 @@ protected:
     glClearColor(0.1F, 0.2F, 0.3F, 1.0F);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    auto view_proj = GetCamera()->GetViewProjectionMatrix();
+    const glm::mat4 view_proj{GetCamera()->GetViewProjectionMatrix()};
+    if (!m_enable_frozen_culling || !m_has_culling_view) {
+      // 在渲染阶段捕获，使用相机控制器更新后的视角；观察相机仍可继续移动。
+      m_culling_view_projection = view_proj;
+      m_culling_planes = ExtractFrustumPlanes(m_culling_view_projection);
+      m_has_culling_view = true;
+    }
 
     // 复用可见列表前，确保上一帧顶点着色器的 SSBO 读取先完成。
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
@@ -106,8 +118,7 @@ protected:
                               GL_UNSIGNED_INT, &zero);
     m_cull_shader->Bind();
 
-    auto frustum_planes = ExtractFrustumPlanes(view_proj);
-    m_frustums_ubo->SetData(0, std::as_bytes(std::span(frustum_planes)));
+    m_frustums_ubo->SetData(0, std::as_bytes(std::span(m_culling_planes)));
 
     m_cull_shader->SetUInt("u_TotalInstances", static_cast<uint32_t>(m_total_instances));
 
@@ -121,7 +132,7 @@ protected:
     GLuint visible_count{};
     // 此示例保留同步读回，indirect_draw 示例再展示无需 CPU 回读的绘制路径。
     glGetNamedBufferSubData(m_count_buffer_ssbo->GetHandle(), 0, sizeof(visible_count), &visible_count);
-    std::cout << "visible count: " << visible_count << '\n';
+    m_visible_count = visible_count;
 
     m_draw_timer->Begin();
     m_render_shader->Bind();
@@ -132,42 +143,51 @@ protected:
     m_cpu_render_sum_ms +=
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cpu_begin).count();
     ++m_cpu_sample_count;
+
+    // 调试线框独立绘制，避免剔除结果把包围体一起隐藏，也不计入上述场景耗时。
+    DrawCullingDebug(view_proj);
   }
 
   void OnImGui() override {
-    ImGui::Begin("Material");
+    ImGui::Begin("Compute Culling");
 
-    static int s_material_index1{0};
-    constexpr int material_count1{2};
-    constexpr std::array<const char*, material_count1> material_names1{"alpha_blend", "wood"};
-    if (ImGui::Combo("instance 1", &s_material_index1, material_names1.data(), material_count1)) {
-      m_instances[0].materialID = static_cast<uint32_t>(s_material_index1);
-      m_instances_ssbo->SetData(0, std::as_bytes(std::span(m_instances)));
-      ResetTimingSamples();
-    }
+    DrawCullingControls();
 
-    static int s_material_index2{1};
-    constexpr int material_count2{2};
-    constexpr std::array<const char*, material_count2> material_names2{"alpha_blend", "wood"};
-    if (ImGui::Combo("instance 2", &s_material_index2, material_names2.data(), material_count2)) {
-      m_instances[1].materialID = static_cast<uint32_t>(s_material_index2);
-      m_instances_ssbo->SetData(0, std::as_bytes(std::span(m_instances)));
+    ImGui::SliderInt("Instance (0-based)", &m_selected_instance, 0, static_cast<int>(m_instances.size()) - 1);
+    GpuInstanceData& instance{m_instances[static_cast<std::size_t>(m_selected_instance)]};
+    int material_index{static_cast<int>(instance.materialID)};
+    constexpr std::array<const char*, 2> k_material_names{"alpha_blend", "wood"};
+    if (ImGui::Combo("Material", &material_index, k_material_names.data(), static_cast<int>(k_material_names.size()))) {
+      instance.materialID = static_cast<uint32_t>(material_index);
+      const auto byte_offset{
+        static_cast<GLintptr>(static_cast<std::size_t>(m_selected_instance) * sizeof(GpuInstanceData))};
+      m_instances_ssbo->SetData(byte_offset, std::as_bytes(std::span(&instance, 1)));
       ResetTimingSamples();
     }
 
     ImGui::Separator();
+    ImGui::TextUnformatted(std::format("Visible instances: {} / {}", m_visible_count, m_total_instances).c_str());
+    ImGui::TextUnformatted("Timing (1 s average)");
+    if (ImGui::IsItemHovered()) {
+      ImGui::BeginTooltip();
+      ImGui::TextUnformatted(
+        "Frame includes UI / VSync. Scene intervals exclude debug lines and UI.\n"
+        "CPU includes synchronous readback; GPU total may include submission gaps.\n"
+        "GPU samples are delayed. Draw starts after readback.");
+      ImGui::EndTooltip();
+    }
     m_frame_time_sum_seconds += static_cast<double>(ImGui::GetIO().DeltaTime);
     ++m_frame_sample_count;
     const auto timing_now{std::chrono::steady_clock::now()};
     if (timing_now - m_timing_update_time >= std::chrono::seconds{1}) {
       const double frame_ms{m_frame_time_sum_seconds * 1000.0 / static_cast<double>(m_frame_sample_count)};
       const double fps{frame_ms > 0.0 ? 1000.0 / frame_ms : 0.0};
-      m_timing_text = std::format("Frame avg: {:.2f} ms | {:.1f} FPS (includes UI / VSync)\n", frame_ms, fps);
+      m_timing_text = std::format("Frame: {:.2f} ms | {:.1f} FPS\n", frame_ms, fps);
       if (m_cpu_sample_count > 0) {
         m_timing_text +=
-          std::format("CPU render avg: {:.3f} ms\n", m_cpu_render_sum_ms / static_cast<double>(m_cpu_sample_count));
+          std::format("CPU render: {:.3f} ms\n", m_cpu_render_sum_ms / static_cast<double>(m_cpu_sample_count));
       } else {
-        m_timing_text += "CPU render avg: no samples\n";
+        m_timing_text += "CPU render: no samples\n";
       }
       m_timing_text += FormatGpuTiming("GPU total", *m_total_timer);
       m_timing_text += FormatGpuTiming("Cull", *m_cull_timer);
@@ -178,13 +198,8 @@ protected:
       m_frame_sample_count = 0;
       m_timing_update_time = timing_now;
     }
-    ImGui::TextUnformatted(m_timing_text.empty() ? "Collecting 1-second timing samples..." : m_timing_text.c_str());
     ImGui::PushTextWrapPos();
-    ImGui::TextUnformatted(
-      "Averages update once per second. CPU / GPU intervals exclude UI and swap; GPU samples are delayed.");
-    ImGui::TextUnformatted(
-      "CPU time includes synchronous readback and console output. GPU total can include submission gaps; "
-      "Draw starts after readback.");
+    ImGui::TextUnformatted(m_timing_text.empty() ? "Collecting samples..." : m_timing_text.c_str());
     ImGui::PopTextWrapPos();
     ImGui::End();
   }
@@ -193,6 +208,11 @@ protected:
     m_total_timer.reset();
     m_cull_timer.reset();
     m_draw_timer.reset();
+
+    m_debug_shader.reset();
+    m_frustum_drawable.reset();
+    m_frustum_vertex_buffer.reset();
+    m_sphere_drawable.reset();
 
     for (const GpuMaterialData& material : m_materials) {
       if (material.baseColorTexHandle != 0) {
@@ -213,6 +233,119 @@ protected:
   }
 
 private:
+  void DrawCullingControls() {
+    if (ImGui::Checkbox("Freeze culling view", &m_enable_frozen_culling)) {
+      m_has_culling_view = false;
+      ResetTimingSamples();
+    }
+    bool has_debug_change{ImGui::Checkbox("Show culling frustum", &m_enable_frustum_display)};
+    has_debug_change |= ImGui::Checkbox("Show bounding spheres", &m_enable_bounds_display);
+    if (has_debug_change) {
+      ResetTimingSamples();
+    }
+    ImGui::PushTextWrapPos();
+    ImGui::TextUnformatted("Freeze, then move the camera to inspect.");
+    ImGui::TextUnformatted("Yellow: frustum; green/red: pass/reject (CPU).");
+    ImGui::PopTextWrapPos();
+    ImGui::Separator();
+  }
+
+  void InitDebugDrawables() {
+    m_debug_shader = std::make_unique<fw::GraphicsShader>(fw::ShaderPaths{
+      .vertex = "shaders/compute_culling_debug.vert", .fragment = "shaders/compute_culling_debug.frag"});
+
+    constexpr std::array<std::uint32_t, 24> k_frustum_indices{0, 1, 0, 2, 0, 4, 1, 3, 1, 5, 2, 3,
+                                                              2, 6, 3, 7, 4, 5, 4, 6, 5, 7, 6, 7};
+    m_frustum_vertex_buffer =
+      std::make_unique<fw::Buffer>(static_cast<GLsizeiptr>(8 * sizeof(glm::vec3)), GL_DYNAMIC_STORAGE_BIT);
+    m_frustum_drawable = std::make_unique<fw::Drawable>(GL_LINES);
+    m_frustum_drawable->GetVertexArray().SetVertexBuffer(0, *m_frustum_vertex_buffer, 0, sizeof(glm::vec3));
+    m_frustum_drawable->GetVertexArray().SetAttribute(0, 0, 3, GL_FLOAT, 0);
+    m_frustum_drawable->SetIndexBuffer(std::span(k_frustum_indices));
+
+    // 三个互相垂直的大圆复用同一份单位球线框，绘制时再按实例包围球平移和缩放。
+    constexpr std::size_t k_circle_segments{32};
+    std::array<glm::vec3, k_circle_segments * 6> sphere_vertices{};
+    for (std::size_t circle{}; circle < 3; ++circle) {
+      const auto first_axis{static_cast<glm::length_t>((circle + 1) % 3)};
+      const auto second_axis{static_cast<glm::length_t>((circle + 2) % 3)};
+      for (std::size_t segment{}; segment < k_circle_segments; ++segment) {
+        for (std::size_t endpoint{}; endpoint < 2; ++endpoint) {
+          const float angle{2.0F * std::numbers::pi_v<float> * static_cast<float>(segment + endpoint) /
+                            static_cast<float>(k_circle_segments)};
+          glm::vec3& vertex{sphere_vertices[(circle * k_circle_segments + segment) * 2 + endpoint]};
+          vertex[first_axis] = std::cos(angle);
+          vertex[second_axis] = std::sin(angle);
+        }
+      }
+    }
+    m_sphere_drawable = std::make_unique<fw::Drawable>(GL_LINES);
+    m_sphere_drawable->AddVertexBuffer(0, std::span(sphere_vertices), sizeof(glm::vec3));
+    m_sphere_drawable->GetVertexArray().SetAttribute(0, 0, 3, GL_FLOAT, 0);
+    m_sphere_drawable->SetVertexCount(static_cast<GLsizei>(sphere_vertices.size()));
+  }
+
+  void DrawCullingFrustum() {
+    const glm::mat4 inverse_view_projection{glm::inverse(m_culling_view_projection)};
+    std::array<glm::vec3, 8> corners{};
+    for (std::size_t corner{}; corner < corners.size(); ++corner) {
+      // 当前项目使用 OpenGL 默认的 [-1, 1] 裁剪深度范围。
+      const glm::vec4 position{inverse_view_projection * glm::vec4{(corner & 1U) != 0 ? 1.0F : -1.0F,
+                                                                   (corner & 2U) != 0 ? 1.0F : -1.0F,
+                                                                   (corner & 4U) != 0 ? 1.0F : -1.0F, 1.0F}};
+      if (!std::isfinite(position.w) || std::abs(position.w) < 1e-6F) {
+        return;
+      }
+      corners[corner] = glm::vec3{position} / position.w;
+    }
+    m_frustum_vertex_buffer->SetData(0, std::as_bytes(std::span(corners)));
+    m_debug_shader->SetMat4("u_Model", glm::mat4{1.0F});
+    m_debug_shader->SetVec3("u_Color", glm::vec3{1.0F, 0.85F, 0.05F});
+    m_frustum_drawable->Draw();
+  }
+
+  bool IsSphereInCullingFrustum(glm::vec4 sphere) const noexcept {
+    for (const Plane& plane : m_culling_planes) {
+      if (glm::dot(plane.normal, glm::vec3{sphere}) + plane.d < -sphere.w) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void DrawCullingDebug(const glm::mat4& observer_view_projection) {
+    if (!m_enable_frustum_display && !m_enable_bounds_display) {
+      return;
+    }
+    const GLboolean depth_enabled{glIsEnabled(GL_DEPTH_TEST)};
+    const GLboolean depth_clamp_enabled{glIsEnabled(GL_DEPTH_CLAMP)};
+    // 线框作为叠加显示，确保被场景遮挡或剔除的包围体也能被观察。
+    glDisable(GL_DEPTH_TEST);
+    // 关闭深度测试仍会裁剪线框，仅在调试绘制时取消近、远平面的裁剪。
+    glEnable(GL_DEPTH_CLAMP);
+    m_debug_shader->Bind();
+    m_debug_shader->SetMat4("u_ViewProjection", observer_view_projection);
+    if (m_enable_bounds_display) {
+      for (const GpuInstanceData& instance : m_instances) {
+        const glm::vec4 sphere{instance.boundingSphere};
+        const glm::mat4 model{glm::scale(glm::translate(glm::mat4{1.0F}, glm::vec3{sphere}), glm::vec3{sphere.w})};
+        m_debug_shader->SetMat4("u_Model", model);
+        m_debug_shader->SetVec3(
+          "u_Color", IsSphereInCullingFrustum(sphere) ? glm::vec3{0.2F, 1.0F, 0.2F} : glm::vec3{1.0F, 0.2F, 0.2F});
+        m_sphere_drawable->Draw();
+      }
+    }
+    if (m_enable_frustum_display) {
+      DrawCullingFrustum();
+    }
+    if (depth_enabled == GL_TRUE) {
+      glEnable(GL_DEPTH_TEST);
+    }
+    if (depth_clamp_enabled == GL_FALSE) {
+      glDisable(GL_DEPTH_CLAMP);
+    }
+  }
+
   void ResetTimingSamples() noexcept {
     // 更换测量条件时，丢弃旧平均值以及 GPU 中尚未返回的旧条件样本。
     m_total_timer->ResetSamples();
@@ -362,6 +495,19 @@ private:
 
   std::unique_ptr<fw::GraphicsShader> m_render_shader{};
   std::unique_ptr<fw::ComputeShader> m_cull_shader{};
+
+  std::unique_ptr<fw::GraphicsShader> m_debug_shader{};
+  std::unique_ptr<fw::Drawable> m_frustum_drawable{};
+  std::unique_ptr<fw::Buffer> m_frustum_vertex_buffer{};
+  std::unique_ptr<fw::Drawable> m_sphere_drawable{};
+  glm::mat4 m_culling_view_projection{1.0F};
+  std::array<Plane, 6> m_culling_planes{};
+  bool m_enable_frozen_culling{false};
+  bool m_has_culling_view{false};
+  bool m_enable_frustum_display{false};
+  bool m_enable_bounds_display{false};
+  int m_selected_instance{};
+  GLuint m_visible_count{};
 
   std::unique_ptr<fw::Drawable> m_drawable{};
   std::unique_ptr<fw::Texture> m_texture1{};
