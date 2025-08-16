@@ -21,7 +21,7 @@ namespace {
 std::string FormatGpuTiming(const char* label, fw::GpuTimer& timer) {
   const auto milliseconds{timer.TakeAverageMilliseconds()};
   if (milliseconds) {
-    return std::format("{} avg: {:.3f} ms\n", label, *milliseconds);
+    return std::format("{}: {:.3f} ms\n", label, *milliseconds);
   }
   return std::format("{}: no new samples\n", label);
 }
@@ -194,12 +194,12 @@ protected:
 
   void OnImGui() override {
     ImGui::Begin("Hi-Z Occlusion Culling");
-    bool has_settings_change{ImGui::Checkbox("Enable frustum culling", &m_enable_frustum_culling)};
-    has_settings_change |= ImGui::Checkbox("Enable Hi-Z Occlusion culling", &m_enable_occlusion_culling);
-    has_settings_change |= ImGui::Checkbox("Wall wireframe display", &m_show_wall_as_wireframe);
-    has_settings_change |= ImGui::SliderFloat("Depth offset", &m_depth_bias, 0.0F, 0.01F, "%.6f");
-    has_settings_change |= ImGui::DragFloat3("Wall location", &m_wall_translation.x, 0.1F);
-    if (ImGui::Button("Reset Wall")) {
+    bool has_settings_change{ImGui::Checkbox("Frustum culling", &m_enable_frustum_culling)};
+    has_settings_change |= ImGui::Checkbox("Hi-Z culling", &m_enable_occlusion_culling);
+    has_settings_change |= ImGui::Checkbox("Wall wireframe", &m_show_wall_as_wireframe);
+    has_settings_change |= ImGui::SliderFloat("Depth bias", &m_depth_bias, 0.0F, 0.01F, "%.6f");
+    has_settings_change |= ImGui::DragFloat3("Wall position", &m_wall_translation.x, 0.1F);
+    if (ImGui::Button("Reset wall")) {
       m_wall_translation = k_initial_wall_translation;
       has_settings_change = true;
     }
@@ -207,27 +207,34 @@ protected:
       ResetTimingSamples();
     }
     ImGui::Separator();
-    ImGui::TextUnformatted(std::format("instance count: {}", m_total_instances).c_str());
+    DrawHiZPreview();
     ImGui::Separator();
+    ImGui::TextUnformatted(std::format("Total instances: {}", m_total_instances).c_str());
+    ImGui::TextUnformatted("Timing (1 s average)");
+    if (ImGui::IsItemHovered()) {
+      ImGui::BeginTooltip();
+      ImGui::TextUnformatted("Scene intervals exclude UI; frame includes UI / VSync.\nGPU samples are delayed.");
+      ImGui::EndTooltip();
+    }
     m_frame_time_sum_seconds += static_cast<double>(ImGui::GetIO().DeltaTime);
     ++m_frame_sample_count;
     const auto timing_now{std::chrono::steady_clock::now()};
     if (timing_now - m_timing_update_time >= std::chrono::seconds{1}) {
       const double frame_ms{m_frame_time_sum_seconds * 1000.0 / static_cast<double>(m_frame_sample_count)};
       const double fps{frame_ms > 0.0 ? 1000.0 / frame_ms : 0.0};
-      m_timing_text = std::format("Frame avg: {:.2f} ms | {:.1f} FPS (includes UI / VSync)\n", frame_ms, fps);
+      m_timing_text = std::format("Frame: {:.2f} ms | {:.1f} FPS\n", frame_ms, fps);
       if (m_cpu_sample_count > 0) {
         m_timing_text +=
-          std::format("CPU render avg: {:.3f} ms\n", m_cpu_render_sum_ms / static_cast<double>(m_cpu_sample_count));
+          std::format("CPU render: {:.3f} ms\n", m_cpu_render_sum_ms / static_cast<double>(m_cpu_sample_count));
       } else {
-        m_timing_text += "CPU render avg: no samples\n";
+        m_timing_text += "CPU render: no samples\n";
       }
       m_timing_text += FormatGpuTiming("GPU total", *m_total_timer);
       if (m_enable_occlusion_culling) {
-        m_timing_text += FormatGpuTiming("Occluder depth", *m_depth_timer);
-        m_timing_text += FormatGpuTiming("Hi-Z generation", *m_hiz_timer);
+        m_timing_text += FormatGpuTiming("Depth prepass", *m_depth_timer);
+        m_timing_text += FormatGpuTiming("Hi-Z build", *m_hiz_timer);
       } else {
-        m_timing_text += "Occluder depth / Hi-Z generation: disabled\n";
+        m_timing_text += "Depth / Hi-Z: off\n";
       }
       m_timing_text += FormatGpuTiming("Cull", *m_cull_timer);
       m_timing_text += FormatGpuTiming("Draw", *m_draw_timer);
@@ -237,10 +244,8 @@ protected:
       m_frame_sample_count = 0;
       m_timing_update_time = timing_now;
     }
-    ImGui::TextUnformatted(m_timing_text.empty() ? "Collecting 1-second timing samples..." : m_timing_text.c_str());
     ImGui::PushTextWrapPos();
-    ImGui::TextUnformatted(
-      "Averages update once per second. CPU / GPU intervals exclude UI and swap; GPU samples are delayed.");
+    ImGui::TextUnformatted(m_timing_text.empty() ? "Collecting samples..." : m_timing_text.c_str());
     ImGui::PopTextWrapPos();
     ImGui::End();
   }
@@ -274,6 +279,10 @@ protected:
       m_depth_framebuffer = 0;
     }
 
+    if (m_hiz_preview_view != 0) {
+      glDeleteTextures(1, &m_hiz_preview_view);
+      m_hiz_preview_view = 0;
+    }
     m_hiz_texture.reset();
     m_depth_texture.reset();
     m_texture2.reset();
@@ -296,6 +305,35 @@ protected:
   }
 
 private:
+  void DrawHiZPreview() {
+    ImGui::Checkbox("Show Hi-Z", &m_show_hiz_preview);
+    if (!m_show_hiz_preview || m_framebuffer_width <= 0 || m_framebuffer_height <= 0) {
+      return;
+    }
+    if (!m_enable_occlusion_culling) {
+      ImGui::TextUnformatted("Enable Hi-Z culling to preview.");
+      return;
+    }
+
+    ImGui::SliderInt("Mip", &m_hiz_preview_mip, 0, m_hiz_mip_count - 1);
+    const int mip_width{std::max(1, m_framebuffer_width >> m_hiz_preview_mip)};
+    const int mip_height{std::max(1, m_framebuffer_height >> m_hiz_preview_mip)};
+    ImGui::TextUnformatted(std::format("{} x {}", mip_width, mip_height).c_str());
+    glTextureParameteri(m_hiz_preview_view, GL_TEXTURE_BASE_LEVEL, m_hiz_preview_mip);
+    glTextureParameteri(m_hiz_preview_view, GL_TEXTURE_MAX_LEVEL, m_hiz_preview_mip);
+
+    const float image_width{std::clamp(ImGui::GetContentRegionAvail().x, 1.0F, 320.0F)};
+    const float image_height{image_width * static_cast<float>(m_framebuffer_height) /
+                             static_cast<float>(m_framebuffer_width)};
+    ImDrawList* draw_list{ImGui::GetWindowDrawList()};
+    // 最近邻采样保留 Mip 的像素块，翻转 UV 以匹配 OpenGL 的图像方向。
+    draw_list->AddCallback(ImGui::GetPlatformIO().DrawCallback_SetSamplerNearest);
+    ImGui::Image(static_cast<ImTextureID>(m_hiz_preview_view), ImVec2{image_width, image_height}, ImVec2{0.0F, 1.0F},
+                 ImVec2{1.0F, 0.0F});
+    draw_list->AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState);
+    ImGui::TextUnformatted("Near: black | Far: white");
+  }
+
   void ResetTimingSamples() noexcept {
     // 更换测量条件时，丢弃旧平均值以及 GPU 中尚未返回的旧条件样本。
     m_total_timer->ResetSamples();
@@ -539,6 +577,18 @@ private:
     m_depth_texture = std::move(depth_texture);
     m_hiz_texture = std::move(hiz_texture);
     m_hiz_mip_count = mip_count;
+    m_hiz_preview_mip = std::clamp(m_hiz_preview_mip, 0, mip_count - 1);
+
+    if (m_hiz_preview_view != 0) {
+      glDeleteTextures(1, &m_hiz_preview_view);
+    }
+    // 视图共享现有深度数据，但独立设置 Mip 和灰度通道，不影响剔除采样。
+    // glTextureView 要求使用 glGenTextures 生成尚未初始化的纹理名称。
+    glGenTextures(1, &m_hiz_preview_view);
+    glTextureView(m_hiz_preview_view, GL_TEXTURE_2D, m_hiz_texture->GetHandle(), GL_R32F, 0,
+                  static_cast<GLuint>(mip_count), 0, 1);
+    constexpr std::array<GLint, 4> k_grayscale_swizzle{GL_RED, GL_RED, GL_RED, GL_ONE};
+    glTextureParameteriv(m_hiz_preview_view, GL_TEXTURE_SWIZZLE_RGBA, k_grayscale_swizzle.data());
   }
 
   [[nodiscard]] static int CalculateMipCount(int width, int height) noexcept {
@@ -589,9 +639,11 @@ private:
   std::unique_ptr<fw::Buffer> m_frustum_ubo{};
 
   GLuint m_depth_framebuffer{};
+  GLuint m_hiz_preview_view{};
   int m_framebuffer_width{1280};
   int m_framebuffer_height{720};
   int m_hiz_mip_count{1};
+  int m_hiz_preview_mip{};
   std::uint32_t m_cube_index_count{};
   std::size_t m_total_instances{};
   fw::AABB m_total_bounds{};
@@ -606,6 +658,7 @@ private:
   bool m_enable_frustum_culling{true};
   bool m_enable_occlusion_culling{true};
   bool m_show_wall_as_wireframe{true};
+  bool m_show_hiz_preview{false};
   bool m_is_initialized{false};
 };
 
