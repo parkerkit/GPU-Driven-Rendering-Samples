@@ -96,13 +96,14 @@ PrimitiveData Shapes::Sphere(float radius, std::uint32_t x_segments, std::uint32
       const std::uint32_t current = y * (x_segments + 1) + x;
       const std::uint32_t next = current + x_segments + 1;
 
+      // 从球外观察时使用逆时针绕序，使几何法线与顶点的向外法线一致。
       primitive.indices.push_back(current);
-      primitive.indices.push_back(next);
       primitive.indices.push_back(current + 1);
+      primitive.indices.push_back(next);
 
       primitive.indices.push_back(current + 1);
-      primitive.indices.push_back(next);
       primitive.indices.push_back(next + 1);
+      primitive.indices.push_back(next);
     }
   }
 

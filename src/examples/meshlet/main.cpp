@@ -110,6 +110,10 @@ protected:
     m_total_timer->Begin();
 
     glEnable(GL_DEPTH_TEST);
+    // 两种模式都只渲染正面，Cone Culling 只是提前剔除整组背面三角形。
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
     glClearColor(0.1F, 0.2F, 0.3F, 1.0F);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -130,6 +134,11 @@ protected:
 
     m_frustums_ubo->SetData(0, std::as_bytes(std::span(frustum_planes)));
     m_cull_shader->SetUInt("u_MeshletCount", static_cast<uint32_t>(m_meshlet_count));
+    m_cull_shader->SetInt("u_enable_cone_culling", m_enable_cone_culling ? 1 : 0);
+    m_cull_shader->SetInt("u_is_orthographic",
+                          GetCamera()->GetProjectionType() == fw::Camera::ProjectionType::Orthographic ? 1 : 0);
+    m_cull_shader->SetVec3("u_camera_position", GetCamera()->GetPosition());
+    m_cull_shader->SetVec3("u_view_direction", glm::normalize(GetCamera()->GetTarget() - GetCamera()->GetPosition()));
     m_cull_shader->Dispatch(static_cast<GLuint>((m_meshlet_count + 63) / 64));
 
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
@@ -148,7 +157,10 @@ protected:
   }
 
   void OnImGui() override {
-    ImGui::Begin("Timings");
+    ImGui::Begin("Meshlet");
+    if (ImGui::Checkbox("Cone Culling", &m_enable_cone_culling)) {
+      ResetTimingSamples();
+    }
     ImGui::Separator();
     m_frame_time_sum_seconds += static_cast<double>(ImGui::GetIO().DeltaTime);
     ++m_frame_sample_count;
@@ -259,7 +271,7 @@ private:
 
     constexpr size_t max_vertices = 64;
     constexpr size_t max_triangles = 64;
-    // 当前只做包围球视锥剔除，不让法线锥权重影响 Meshlet 划分。
+    // 保持与其他绘制路径相同的划分，开关只影响运行时剔除。
     constexpr float cone_weight = 0.0F;
 
     const size_t max_meshlets = meshopt_buildMeshletsBound(source_indices.size(), max_vertices, max_triangles);
@@ -329,6 +341,7 @@ private:
   std::size_t m_frame_sample_count{};
   std::chrono::steady_clock::time_point m_timing_update_time{};
   std::string m_timing_text{};
+  bool m_enable_cone_culling{true};
 
   std::unique_ptr<fw::GraphicsShader> m_render_shader{};
   std::unique_ptr<fw::ComputeShader> m_cull_shader{};

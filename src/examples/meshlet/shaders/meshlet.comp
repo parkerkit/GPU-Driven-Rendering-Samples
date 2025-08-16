@@ -38,6 +38,10 @@ layout(std430, binding = 2) buffer Counter
 };
 
 uniform uint u_MeshletCount;
+uniform bool u_enable_cone_culling;
+uniform bool u_is_orthographic;
+uniform vec3 u_camera_position;
+uniform vec3 u_view_direction;
 
 layout(std140, binding = 0) uniform FrustumPlanesBlock {
     vec4 frustumPlanes[6];
@@ -54,6 +58,24 @@ bool sphereInFrustum(vec3 center, float radius)
     return true;
 }
 
+bool IsConeBackfacing(vec4 sphere, vec4 cone)
+{
+    // 法线方向过于分散时，meshoptimizer 将 cutoff 设为 1，不能安全剔除。
+    if (cone.w >= 1.0)
+    {
+        return false;
+    }
+
+    if (u_is_orthographic)
+    {
+        return dot(u_view_direction, cone.xyz) >= cone.w;
+    }
+
+    // 使用 meshoptimizer 的包围球保守公式，补偿透视方向差异，也避免相机位于球心时除零。
+    vec3 camera_to_center = sphere.xyz - u_camera_position;
+    return dot(camera_to_center, cone.xyz) >= cone.w * length(camera_to_center) + sphere.w;
+}
+
 void main()
 {
     uint id = gl_GlobalInvocationID.x;
@@ -68,9 +90,11 @@ void main()
     // 1. Frustum culling
     if (!sphereInFrustum(center, radius)) return;
 
-    // 2. Cone / backface culling
-    // vec3 viewDir = normalize(cameraPos - center);
-    // if (dot(viewDir, m.cone.xyz) < m.cone.w) return;
+    // 只有整个 Meshlet 都背向相机时才剔除。
+    if (u_enable_cone_culling && IsConeBackfacing(m.boundingSphere, m.cone))
+    {
+        return;
+    }
 
     // 3. Hi-Z occlusion culling
     // if (occluded(center, radius)) return;
