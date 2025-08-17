@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-MAX_FILE_SIZE_BYTES = 1024 * 1024
+MAX_FILE_SIZE_BYTES = 1024 * 1024 * 2
 
 
 def staged_files() -> list[Path]:
